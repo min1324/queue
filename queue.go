@@ -27,79 +27,32 @@ type LRQueue struct {
 	data []baseNode
 }
 
-// 一次性初始化
-func (q *LRQueue) onceInit() {
+func (q *LRQueue) onceInit(cap int) {
 	q.once.Do(func() {
-		q.init()
+		if cap < 1 {
+			cap = 1 << 8
+		}
+		mod := modUint32(uint32(cap))
+		q.deID = q.enID
+		q.mod = mod
+		q.cap = mod + 1
+		// atomic.StoreUint32(&q.cap, mod+1)
+		q.data = make([]baseNode, q.cap)
 	})
 }
 
-// 无并发初始化
-func (q *LRQueue) init() {
-	cap := atomic.LoadUint32(&q.cap)
-	if cap < 1 {
-		cap = 1 << 8
-	}
-	mod := modUint32(cap)
-	q.deID = q.enID
-	q.mod = mod
-	q.cap = mod + 1
-	// atomic.StoreUint32(&q.cap, mod+1)
-	q.data = make([]baseNode, q.cap)
+// OnceInit 一次性初始化
+func (q *LRQueue) OnceInit(cap int) {
+	q.onceInit(cap)
 }
 
-// Init初始化长度为: DefauleSize.
+// Init initialize queue use default size: 1<<8
+// it only execute once time.
 func (q *LRQueue) Init() {
-	q.InitWith()
+	q.onceInit(1 << 8)
 }
 
-// InitWith初始化长度为cap的queue,
-// 如果未提供，则使用默认值: DefauleSize.
-func (q *LRQueue) InitWith(caps ...int) {
-	q.onceInit()
-	var oldCap = atomic.LoadUint32(&q.cap)
-	var newCap = oldCap
-	if len(caps) > 0 && caps[0] > 0 {
-		newCap = uint32(caps[0])
-	}
-	newMod := modUint32(newCap)
-	newCap = newMod + 1
-	for {
-		cap := atomic.LoadUint32(&q.cap)
-		if cap == 0 {
-			// 其他InitWith正在执行，等待完成
-			return
-		}
-		if casUint32(&q.cap, cap, 0) {
-			// 获得初始化权限
-			oldCap = cap
-			break
-		}
-	}
-	// 让运行中的push,pop停止。
-	for {
-		enID := atomic.LoadUint32(&q.enID)
-		deID := atomic.LoadUint32(&q.deID)
-		if !casUint32(&q.deID, deID, enID) {
-			continue
-		}
-		if casUint32(&q.enID, enID, enID+1) {
-			atomic.StoreUint32(&q.deID, enID)
-			break
-		}
-	}
-	// 初始化,保证getSlot不panic
-	if oldCap > newCap {
-		atomic.StoreUint32(&q.mod, newMod)
-		q.data = make([]baseNode, newCap)
-	} else {
-		q.data = make([]baseNode, newCap)
-		atomic.StoreUint32(&q.mod, newMod)
-	}
-	atomic.StoreUint32(&q.cap, newCap)
-}
-
-// 数量
+// Size return current element in queue
 func (q *LRQueue) Size() int {
 	deID := atomic.LoadUint32(&q.deID)
 	enID := atomic.LoadUint32(&q.enID)
@@ -111,8 +64,9 @@ func (q *LRQueue) getSlot(id uint32) *baseNode {
 	return &q.data[id&atomic.LoadUint32(&q.mod)]
 }
 
+// EnQueue put val into queue,if success return true
 func (q *LRQueue) EnQueue(val interface{}) bool {
-	q.onceInit()
+	q.Init()
 	if q.Full() {
 		return false
 	}
@@ -139,8 +93,10 @@ func (q *LRQueue) EnQueue(val interface{}) bool {
 	return true
 }
 
+// DeQueue get the frist element in queue,
+// if queue empty,it return nil,false
 func (q *LRQueue) DeQueue() (val interface{}, ok bool) {
-	q.onceInit()
+	q.Init()
 	if q.Empty() {
 		return
 	}
@@ -168,12 +124,12 @@ func (q *LRQueue) DeQueue() (val interface{}, ok bool) {
 	return val, true
 }
 
-// queue's cap
+// Cap queue's cap
 func (q *LRQueue) Cap() int {
 	return int(q.cap)
 }
 
-// 队列是否满
+// Full return queue if full
 func (q *LRQueue) Full() bool {
 	// InitWith时，将cap置为0.
 	cap := atomic.LoadUint32(&q.cap)
@@ -182,7 +138,7 @@ func (q *LRQueue) Full() bool {
 	return enID >= cap+deID
 }
 
-// 队列是否空
+// Empty return queue if empty
 func (q *LRQueue) Empty() bool {
 	return atomic.LoadUint32(&q.deID) == atomic.LoadUint32(&q.enID)
 }

@@ -37,7 +37,7 @@ func TestInit(t *testing.T) {
 	queueMap(t, queueStruct{
 		setup: func(t *testing.T, s QInterface) {
 			if v, ok := s.(*queue.LRQueue); ok {
-				v.InitWith(1 << 20)
+				v.OnceInit(1 << 15)
 			}
 		},
 		perG: func(t *testing.T, s QInterface) {
@@ -154,7 +154,7 @@ func TestEnQueue(t *testing.T) {
 	queueMap(t, queueStruct{
 		setup: func(t *testing.T, s QInterface) {
 			if v, ok := s.(*queue.LRQueue); ok {
-				v.InitWith(1 << 20)
+				v.OnceInit(1 << 15)
 			}
 		},
 		perG: func(t *testing.T, s QInterface) {
@@ -178,7 +178,7 @@ func TestDeQueue(t *testing.T) {
 	queueMap(t, queueStruct{
 		setup: func(t *testing.T, s QInterface) {
 			if v, ok := s.(*queue.LRQueue); ok {
-				v.InitWith(1 << 20)
+				v.OnceInit(1 << 15)
 			}
 		},
 		perG: func(t *testing.T, s QInterface) {
@@ -214,7 +214,7 @@ func TestConcurrentInit(t *testing.T) {
 				t.Skip("UnsafeQueue can not test concurrent.")
 			}
 			if v, ok := s.(*queue.LRQueue); ok {
-				v.InitWith(1 << 20)
+				v.OnceInit(1 << 15)
 			}
 		},
 		perG: func(t *testing.T, s QInterface) {
@@ -289,7 +289,7 @@ func TestConcurrentEnQueue(t *testing.T) {
 				t.Skip("UnsafeQueue can not test concurrent.")
 			}
 			if v, ok := s.(*queue.LRQueue); ok {
-				v.InitWith(1 << 20)
+				v.OnceInit(1 << 15)
 			}
 		},
 		perG: func(t *testing.T, s QInterface) {
@@ -334,7 +334,7 @@ func TestConcurrentDeQueue(t *testing.T) {
 				t.Skip("UnsafeQueue can not test concurrent.")
 			}
 			if v, ok := s.(*queue.LRQueue); ok {
-				v.InitWith(1 << 20)
+				v.OnceInit(1 << 15)
 			}
 		},
 		perG: func(t *testing.T, s QInterface) {
@@ -385,7 +385,7 @@ func TestConcurrentEnQueueDeQueue(t *testing.T) {
 				t.Skip("UnsafeQueue can not test concurrent.")
 			}
 			if v, ok := s.(*queue.LRQueue); ok {
-				v.InitWith(1 << 20)
+				v.OnceInit(1 << 15)
 			}
 		},
 		perG: func(t *testing.T, s QInterface) {
