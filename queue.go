@@ -3,28 +3,28 @@ package queue
 import (
 	"sync"
 	"sync/atomic"
+	"unsafe"
 )
 
 // 包装nil值。
 var empty = new(interface{})
 
-// lock-free queue implement with array
-//
 // LRQueue is a lock-free ring array queue.
 type LRQueue struct {
 	once sync.Once
 
-	cap  uint32 // 队列容量，自动向上调整至2^n
-	mod  uint32 // cap-1,即2^n-1,用作取slot: data[ID&mod]
-	deID uint32 // 指向下次取出数据的位置:deID&mod
-	enID uint32 // 指向下次写入数据的位置:enID&mod
+	count uint32 // number of element in queue
+	cap   uint32 // 队列容量，自动向上调整至2^n
+	mod   uint32 // cap-1,即2^n-1,用作取slot: data[ID&mod]
+	deID  uint32 // 指向下次取出数据的位置:deID&mod
+	enID  uint32 // 指向下次写入数据的位置:enID&mod
 
 	// 环形队列，大小必须是2的倍数。
 	// val为空，表示可以EnQUeue,如果是DeQueue操作，表示队列空。
 	// val不为空，表所可以DeQueue,如果是EnQUeue操作，表示队列满了。
 	// 并且只能由EnQUeue将val从nil变成非nil,
 	// 只能由DeQueue将val从非niu变成nil.
-	data []baseNode
+	data []entry
 }
 
 func (q *LRQueue) onceInit(cap int) {
@@ -33,15 +33,15 @@ func (q *LRQueue) onceInit(cap int) {
 			cap = 1 << 8
 		}
 		mod := modUint32(uint32(cap))
-		q.deID = q.enID
 		q.mod = mod
 		q.cap = mod + 1
-		// atomic.StoreUint32(&q.cap, mod+1)
-		q.data = make([]baseNode, q.cap)
+		q.data = make([]entry, mod+1)
 	})
 }
 
-// OnceInit 一次性初始化
+// OnceInit initialize queue use cap
+// it only execute once time.
+// if cap<1, will use 1<<8.
 func (q *LRQueue) OnceInit(cap int) {
 	q.onceInit(cap)
 }
@@ -54,24 +54,20 @@ func (q *LRQueue) Init() {
 
 // Size return current element in queue
 func (q *LRQueue) Size() int {
-	deID := atomic.LoadUint32(&q.deID)
-	enID := atomic.LoadUint32(&q.enID)
-	return int(enID - deID)
+	return int(atomic.LoadUint32(&q.count))
 }
 
 // 根据enID,deID获取进队，出队对应的slot
-func (q *LRQueue) getSlot(id uint32) *baseNode {
+func (q *LRQueue) getSlot(id uint32) *entry {
 	return &q.data[id&atomic.LoadUint32(&q.mod)]
 }
 
-// EnQueue put val into queue,if success return true
-func (q *LRQueue) EnQueue(val interface{}) bool {
+// EnQueue put value into queue,
+// it return true if success,or false if queue full.
+func (q *LRQueue) EnQueue(value interface{}) bool {
 	q.Init()
-	if q.Full() {
-		return false
-	}
-	if val == nil {
-		val = empty
+	if value == nil {
+		value = empty
 	}
 	for {
 		enID := atomic.LoadUint32(&q.enID)
@@ -80,13 +76,12 @@ func (q *LRQueue) EnQueue(val interface{}) bool {
 		}
 		slot := q.getSlot(enID)
 		if slot.load() != nil {
-			// TODO 是否需要写入缓冲区,或者扩容
 			// queue full,
 			return false
 		}
 		if casUint32(&q.enID, enID, enID+1) {
-			// 成功获得slot
-			slot.store(val)
+			slot.store(value)
+			atomic.AddUint32(&q.count, 1)
 			break
 		}
 	}
@@ -94,53 +89,66 @@ func (q *LRQueue) EnQueue(val interface{}) bool {
 }
 
 // DeQueue get the frist element in queue,
-// if queue empty,it return nil,false
-func (q *LRQueue) DeQueue() (val interface{}, ok bool) {
+// it return true if success,or false if queue empty.
+func (q *LRQueue) DeQueue() (value interface{}, ok bool) {
 	q.Init()
-	if q.Empty() {
-		return
-	}
 	for {
-		// 获取最新 DeQueuePID,
 		deID := atomic.LoadUint32(&q.deID)
 		if q.Empty() {
-			return
+			return nil, false
 		}
 		slot := q.getSlot(deID)
-		val = slot.load()
-		if val == nil {
-			// queue empty,
+		value = slot.load()
+		if value == nil {
+			// enqueue not yet success,queue empty
 			return nil, false
 		}
 		if casUint32(&q.deID, deID, deID+1) {
-			// 成功取出slot
-			if val == empty {
-				val = nil
-			}
 			slot.free()
+			atomic.AddUint32(&q.count, ^uint32(0))
 			break
 		}
 	}
-	return val, true
+	if value == empty {
+		value = nil
+	}
+	return value, true
 }
 
-// Cap queue's cap
+// Cap return queue's cap
 func (q *LRQueue) Cap() int {
 	return int(q.cap)
 }
 
-// Full return queue if full
-func (q *LRQueue) Full() bool {
-	// InitWith时，将cap置为0.
-	cap := atomic.LoadUint32(&q.cap)
-	deID := atomic.LoadUint32(&q.deID)
-	enID := atomic.LoadUint32(&q.enID)
-	return enID >= cap+deID
-}
-
 // Empty return queue if empty
 func (q *LRQueue) Empty() bool {
-	return atomic.LoadUint32(&q.deID) == atomic.LoadUint32(&q.enID)
+	return atomic.LoadUint32(&q.count) == 0
+}
+
+// Full return queue if full
+func (q *LRQueue) Full() bool {
+	return atomic.LoadUint32(&q.count) == atomic.LoadUint32(&q.cap)
+}
+
+// entry queue element
+type entry struct {
+	p unsafe.Pointer
+}
+
+func (n *entry) load() interface{} {
+	p := atomic.LoadPointer(&n.p)
+	if p == nil {
+		return nil
+	}
+	return *(*interface{})(p)
+}
+
+func (n *entry) store(i interface{}) {
+	atomic.StorePointer(&n.p, unsafe.Pointer(&i))
+}
+
+func (n *entry) free() {
+	atomic.StorePointer(&n.p, nil)
 }
 
 // 溢出环形计算需要，得出2^n-1。(2^n>=u,具体可见kfifo）

@@ -381,7 +381,7 @@ func TestConcurrentEnQueueDeQueue(t *testing.T) {
 					}
 				}()
 				DeQueueWG.Add(1)
-				go func() {
+				go func(t *testing.T) {
 					defer DeQueueWG.Done()
 					for {
 						select {
@@ -397,7 +397,7 @@ func TestConcurrentEnQueueDeQueue(t *testing.T) {
 							}
 						}
 					}
-				}()
+				}(t)
 			}
 			EnQueueWG.Wait()
 			close(exit)
