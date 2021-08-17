@@ -3,11 +3,10 @@ package queue
 import (
 	"sync"
 	"sync/atomic"
-	"unsafe"
 )
 
 // 包装nil值。
-var empty = unsafe.Pointer(new(interface{}))
+var empty = new(interface{})
 
 // lock-free queue implement with array
 //
@@ -96,7 +95,9 @@ func (q *LRQueue) InitWith(caps ...int) {
 
 // 数量
 func (q *LRQueue) Size() int {
-	return int(q.enID - q.deID)
+	deID := atomic.LoadUint32(&q.deID)
+	enID := atomic.LoadUint32(&q.enID)
+	return int(enID - deID)
 }
 
 // 根据enID,deID获取进队，出队对应的slot

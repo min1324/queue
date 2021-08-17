@@ -1,22 +1,27 @@
 package queue
 
+import (
+	"sync/atomic"
+	"unsafe"
+)
+
 // interface node
 type baseNode struct {
-	p interface{}
-}
-
-func newBaseNode(i interface{}) *baseNode {
-	return &baseNode{p: i}
+	p unsafe.Pointer
 }
 
 func (n *baseNode) load() interface{} {
-	return n.p
+	p := atomic.LoadPointer(&n.p)
+	if p == nil {
+		return nil
+	}
+	return (interface{})(p)
 }
 
 func (n *baseNode) store(i interface{}) {
-	n.p = i
+	atomic.StorePointer(&n.p, unsafe.Pointer(&i))
 }
 
 func (n *baseNode) free() {
-	n.p = nil
+	atomic.StorePointer(&n.p, nil)
 }
