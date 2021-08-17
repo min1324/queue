@@ -36,12 +36,15 @@ func (q *LRQueue) onceInit() {
 
 // 无并发初始化
 func (q *LRQueue) init() {
-	if q.cap < 1 {
-		q.cap = 1 << 8
+	cap := atomic.LoadUint32(&q.cap)
+	if cap < 1 {
+		cap = 1 << 8
 	}
+	mod := modUint32(cap)
 	q.deID = q.enID
-	q.mod = modUint32(q.cap)
-	q.cap = q.mod + 1
+	q.mod = mod
+	q.cap = mod + 1
+	// atomic.StoreUint32(&q.cap, mod+1)
 	q.data = make([]baseNode, q.cap)
 }
 
@@ -94,7 +97,7 @@ func (q *LRQueue) InitWith(caps ...int) {
 		q.data = make([]baseNode, newCap)
 		q.mod = newMod
 	}
-	q.cap = newCap
+	atomic.StoreUint32(&q.cap, newCap)
 }
 
 // 数量
@@ -174,9 +177,10 @@ func (q *LRQueue) Cap() int {
 // 队列是否满
 func (q *LRQueue) Full() bool {
 	// InitWith时，将cap置为0.
+	cap := atomic.LoadUint32(&q.cap)
 	deID := atomic.LoadUint32(&q.deID)
 	enID := atomic.LoadUint32(&q.enID)
-	return enID >= q.cap+deID
+	return enID >= cap+deID
 }
 
 // 队列是否空
