@@ -11,103 +11,6 @@ const (
 	queueLimit = (1 << queueBits) >> 2
 )
 
-// 单锁环形队列,有固定数组
-// 游标采取先操作，后移动方案。
-// EnQUeue,DeQueue操作时，先操作slot增改value
-// 操作完成后移动deID,enID.
-// 队列空条件为deID==enID
-// 满条件enID^cap==deID
-//
-// SRQueue is an unbounded queue which uses a slice as underlying.
-type SRQueue struct {
-	once sync.Once
-	mu   sync.Mutex
-
-	len uint32
-	cap uint32
-	mod uint32
-
-	deID uint32
-	enID uint32
-
-	data []entry
-}
-
-func (q *SRQueue) onceInit(cap int) {
-	q.once.Do(func() {
-		if q.cap < 1 {
-			cap = 1 << 8
-		}
-		mod := modUint32(uint32(cap))
-		q.mod = mod
-		q.cap = mod + 1
-		q.data = make([]entry, mod+1)
-	})
-}
-
-func (q *SRQueue) OnceInit(cap int) {
-	q.onceInit(cap)
-}
-
-func (q *SRQueue) Init() {
-	q.onceInit(1 << 8)
-}
-
-func (q *SRQueue) Cap() int {
-	return int(atomic.LoadUint32(&q.cap))
-}
-
-func (q *SRQueue) Full() bool {
-	return atomic.LoadUint32(&q.len) == atomic.LoadUint32(&q.cap)
-}
-
-func (q *SRQueue) Empty() bool {
-	return atomic.LoadUint32(&q.len) == 0
-}
-
-func (q *SRQueue) Size() int {
-	return int(atomic.LoadUint32(&q.len))
-}
-
-// 根据enID,deID获取进队，出队对应的slot
-func (q *SRQueue) getSlot(id uint32) *entry {
-	return &q.data[id&q.mod]
-}
-
-func (q *SRQueue) EnQueue(val interface{}) bool {
-	q.Init()
-	if q.Full() {
-		return false
-	}
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	if q.Full() {
-		return false
-	}
-	q.getSlot(q.enID).store(val)
-	q.enID += 1
-	q.len += 1
-	return true
-}
-
-func (q *SRQueue) DeQueue() (val interface{}, ok bool) {
-	q.Init()
-	if q.Empty() {
-		return nil, false
-	}
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	if q.Empty() {
-		return nil, false
-	}
-	slot := q.getSlot(q.deID)
-	val = slot.load()
-	q.deID += 1
-	q.len -= 1
-	slot.free()
-	return val, true
-}
-
 // 双锁环形队列,有固定数组
 // 游标采取先操作，后移动方案。
 // EnQUeue,DeQueue操作时，先操作slot增改value
@@ -336,6 +239,112 @@ func (q *SLQueue) DeQueue() (val interface{}, ok bool) {
 	// val = q.head.load()
 
 	// 方案2：head指向下一个取出的有效node
+	slot := q.head
+	val = slot.load()
+	if val == nil {
+		return
+	}
+	q.head = slot.next
+	if val == empty {
+		val = nil
+	}
+	atomic.AddUint32(&q.len, ^uint32(0))
+	slot.free()
+	return val, true
+}
+
+// 双锁链表队列
+//
+// DLQueue is a concurrent unbounded queue which uses two-Lock concurrent queue qlgorithm.
+
+// DLQueue unbounded list queue with one mutex
+type DLQueue struct {
+	once sync.Once
+	deMu sync.Mutex // DeQueue操作锁
+	enMu sync.Mutex // EnQUeue操作锁
+
+	len  uint32
+	head *listNode // 只能由DeQueue操作更改，其他操作只读
+	tail *listNode // 只能由EnQUeue操作更改，其他操作只读
+}
+
+func (q *DLQueue) onceInit() {
+	q.once.Do(func() {
+		q.init()
+	})
+}
+
+func (q *DLQueue) init() {
+	q.head = newListNode(nil)
+	q.tail = q.head
+	q.len = 0
+}
+
+func (q *DLQueue) Init() {
+	q.onceInit()
+	q.enMu.Lock()
+	defer q.enMu.Unlock()
+	q.deMu.Lock()
+	defer q.deMu.Unlock()
+
+	head := q.head
+	tail := q.tail
+	if head == tail {
+		return
+	}
+	q.head = q.tail
+	atomic.StoreUint32(&q.len, 0)
+	for head != tail && head != nil {
+		freeNode := head
+		head = freeNode.next
+		freeNode.free()
+	}
+}
+
+func (q *DLQueue) Cap() int {
+	return queueLimit
+}
+
+func (q *DLQueue) Full() bool {
+	return false
+}
+
+func (q *DLQueue) Empty() bool {
+	return atomic.LoadUint32(&q.len) == 0
+}
+
+func (q *DLQueue) Size() int {
+	return int(atomic.LoadUint32(&q.len))
+}
+
+func (q *DLQueue) EnQueue(val interface{}) bool {
+	q.onceInit()
+	q.enMu.Lock()
+	defer q.enMu.Unlock()
+	if val == nil {
+		val = empty
+	}
+	// tail指向下一个存入的位置
+	slot := q.tail
+	nilNode := newListNode(nil)
+	slot.next = nilNode
+	q.tail = nilNode
+	slot.store(val)
+	atomic.AddUint32(&q.len, 1)
+	return true
+}
+
+func (q *DLQueue) DeQueue() (val interface{}, ok bool) {
+	q.onceInit()
+	if q.Empty() {
+		return
+	}
+	q.deMu.Lock()
+	defer q.deMu.Unlock()
+
+	if q.Empty() {
+		return
+	}
 	slot := q.head
 	val = slot.load()
 	if val == nil {

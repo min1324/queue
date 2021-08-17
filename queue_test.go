@@ -23,7 +23,8 @@ func queueMap(t *testing.T, test queueStruct) {
 		// &queue.LRQueue{},
 		// &queue.DRQueue{},
 		// &queue.LRQueue{},
-		&queue.SLQueue{},
+		// &queue.SLQueue{},
+		&queue.DLQueue{},
 		// &queue.SRQueue{},
 	} {
 		t.Run(fmt.Sprintf("%T", m), func(t *testing.T) {
