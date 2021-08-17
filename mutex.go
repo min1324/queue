@@ -5,6 +5,12 @@ import (
 	"sync/atomic"
 )
 
+const (
+	initSize   = 1 << 3
+	queueBits  = 32
+	queueLimit = (1 << queueBits) >> 2
+)
+
 // 单锁环形队列,有固定数组
 // 游标采取先操作，后移动方案。
 // EnQUeue,DeQueue操作时，先操作slot增改value

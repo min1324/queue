@@ -20,7 +20,11 @@ type queueStruct struct {
 
 func queueMap(t *testing.T, test queueStruct) {
 	for _, m := range [...]QInterface{
+		// &queue.LRQueue{},
+		&queue.DRQueue{},
 		&queue.LRQueue{},
+		&queue.SLQueue{},
+		&queue.SRQueue{},
 	} {
 		t.Run(fmt.Sprintf("%T", m), func(t *testing.T) {
 			m = reflect.New(reflect.TypeOf(m).Elem()).Interface().(QInterface)
@@ -300,7 +304,7 @@ func TestConcurrentEnQueue(t *testing.T) {
 }
 
 func TestConcurrentDeQueue(t *testing.T) {
-	const maxGo, maxNum = 64, 1 << 20
+	const maxGo, maxNum = 64, 1 << 15
 	const maxSize = maxGo * maxNum
 
 	queueMap(t, queueStruct{
