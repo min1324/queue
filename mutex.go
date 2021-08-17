@@ -271,7 +271,7 @@ func (q *SLQueue) Init() {
 		return
 	}
 	q.head = q.tail
-	q.len = 0
+	atomic.StoreUint32(&q.len, 0)
 	for head != tail && head != nil {
 		freeNode := head
 		head = freeNode.next
