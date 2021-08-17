@@ -177,12 +177,12 @@ func (q *DRQueue) getSlot(id uint32) *entry {
 }
 
 func (q *DRQueue) EnQueue(val interface{}) bool {
+	q.Init()
 	if q.Full() {
 		return false
 	}
 	q.enMu.Lock()
 	defer q.enMu.Unlock()
-	q.Init()
 	if q.Full() {
 		return false
 	}
@@ -201,12 +201,12 @@ func (q *DRQueue) EnQueue(val interface{}) bool {
 }
 
 func (q *DRQueue) DeQueue() (val interface{}, ok bool) {
+	q.Init()
 	if q.Empty() {
 		return nil, false
 	}
 	q.deMu.Lock()
 	defer q.deMu.Unlock()
-	q.Init()
 	if q.Empty() {
 		return nil, false
 	}
