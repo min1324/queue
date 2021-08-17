@@ -90,11 +90,11 @@ func (q *LRQueue) InitWith(caps ...int) {
 	}
 	// 初始化,保证getSlot不panic
 	if oldCap > newCap {
-		q.mod = newMod
+		atomic.StoreUint32(&q.mod, newMod)
 		q.data = make([]baseNode, newCap)
 	} else {
 		q.data = make([]baseNode, newCap)
-		q.mod = newMod
+		atomic.StoreUint32(&q.mod, newMod)
 	}
 	atomic.StoreUint32(&q.cap, newCap)
 }
@@ -108,7 +108,7 @@ func (q *LRQueue) Size() int {
 
 // 根据enID,deID获取进队，出队对应的slot
 func (q *LRQueue) getSlot(id uint32) *baseNode {
-	return &q.data[id&q.mod]
+	return &q.data[id&atomic.LoadUint32(&q.mod)]
 }
 
 func (q *LRQueue) EnQueue(val interface{}) bool {
