@@ -15,7 +15,7 @@ func (n *baseNode) load() interface{} {
 	if p == nil {
 		return nil
 	}
-	return (interface{})(p)
+	return *(*interface{})(p)
 }
 
 func (n *baseNode) store(i interface{}) {

@@ -36,6 +36,9 @@ func TestInit(t *testing.T) {
 
 	queueMap(t, queueStruct{
 		setup: func(t *testing.T, s QInterface) {
+			if v, ok := s.(*queue.LRQueue); ok {
+				v.InitWith(1 << 20)
+			}
 		},
 		perG: func(t *testing.T, s QInterface) {
 			// 初始化测试，
@@ -150,6 +153,9 @@ func TestEnQueue(t *testing.T) {
 	var sum int64
 	queueMap(t, queueStruct{
 		setup: func(t *testing.T, s QInterface) {
+			if v, ok := s.(*queue.LRQueue); ok {
+				v.InitWith(1 << 20)
+			}
 		},
 		perG: func(t *testing.T, s QInterface) {
 			sum = 0
@@ -171,6 +177,9 @@ func TestDeQueue(t *testing.T) {
 	var sum int64
 	queueMap(t, queueStruct{
 		setup: func(t *testing.T, s QInterface) {
+			if v, ok := s.(*queue.LRQueue); ok {
+				v.InitWith(1 << 20)
+			}
 		},
 		perG: func(t *testing.T, s QInterface) {
 			sum = 0
@@ -203,6 +212,9 @@ func TestConcurrentInit(t *testing.T) {
 		setup: func(t *testing.T, s QInterface) {
 			if _, ok := s.(*UnsafeQueue); ok {
 				t.Skip("UnsafeQueue can not test concurrent.")
+			}
+			if v, ok := s.(*queue.LRQueue); ok {
+				v.InitWith(1 << 20)
 			}
 		},
 		perG: func(t *testing.T, s QInterface) {
@@ -275,6 +287,9 @@ func TestConcurrentEnQueue(t *testing.T) {
 			if _, ok := s.(*UnsafeQueue); ok {
 				t.Skip("UnsafeQueue can not test concurrent.")
 			}
+			if v, ok := s.(*queue.LRQueue); ok {
+				v.InitWith(1 << 20)
+			}
 		},
 		perG: func(t *testing.T, s QInterface) {
 			var wg sync.WaitGroup
@@ -316,6 +331,9 @@ func TestConcurrentDeQueue(t *testing.T) {
 		setup: func(t *testing.T, s QInterface) {
 			if _, ok := s.(*UnsafeQueue); ok {
 				t.Skip("UnsafeQueue can not test concurrent.")
+			}
+			if v, ok := s.(*queue.LRQueue); ok {
+				v.InitWith(1 << 20)
 			}
 		},
 		perG: func(t *testing.T, s QInterface) {
@@ -364,6 +382,9 @@ func TestConcurrentEnQueueDeQueue(t *testing.T) {
 		setup: func(t *testing.T, s QInterface) {
 			if _, ok := s.(*UnsafeQueue); ok {
 				t.Skip("UnsafeQueue can not test concurrent.")
+			}
+			if v, ok := s.(*queue.LRQueue); ok {
+				v.InitWith(1 << 20)
 			}
 		},
 		perG: func(t *testing.T, s QInterface) {
