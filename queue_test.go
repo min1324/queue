@@ -22,9 +22,9 @@ func queueMap(t *testing.T, test queueStruct) {
 	for _, m := range [...]QInterface{
 		// &queue.LRQueue{},
 		&queue.DRQueue{},
-		&queue.LRQueue{},
-		&queue.SLQueue{},
-		&queue.SRQueue{},
+		// &queue.LRQueue{},
+		// &queue.SLQueue{},
+		// &queue.SRQueue{},
 	} {
 		t.Run(fmt.Sprintf("%T", m), func(t *testing.T) {
 			m = reflect.New(reflect.TypeOf(m).Elem()).Interface().(QInterface)
