@@ -247,7 +247,7 @@ type SLQueue struct {
 	once sync.Once
 	mu   sync.Mutex
 
-	len  int
+	len  uint32
 	head *listNode
 	tail *listNode
 }
@@ -288,11 +288,11 @@ func (q *SLQueue) Full() bool {
 }
 
 func (q *SLQueue) Empty() bool {
-	return q.head == q.tail
+	return atomic.LoadUint32(&q.len) == 0
 }
 
 func (q *SLQueue) Size() int {
-	return q.len
+	return int(atomic.LoadUint32(&q.len))
 }
 
 func (q *SLQueue) EnQueue(val interface{}) bool {
@@ -315,7 +315,7 @@ func (q *SLQueue) EnQueue(val interface{}) bool {
 	q.tail = nilNode
 	slot.store(val)
 
-	q.len++
+	atomic.AddUint32(&q.len, 1)
 	return true
 }
 
@@ -342,11 +342,10 @@ func (q *SLQueue) DeQueue() (val interface{}, ok bool) {
 		return
 	}
 	q.head = slot.next
-
 	if val == empty {
 		val = nil
 	}
-	q.len--
+	atomic.AddUint32(&q.len, ^uint32(0))
 	slot.free()
 	return val, true
 }
