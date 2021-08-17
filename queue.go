@@ -76,8 +76,12 @@ func (q *LRQueue) InitWith(caps ...int) {
 	// 让运行中的push,pop停止。
 	for {
 		enID := atomic.LoadUint32(&q.enID)
-		q.deID = q.enID
+		deID := atomic.LoadUint32(&q.deID)
+		if !casUint32(&q.deID, deID, enID) {
+			continue
+		}
 		if casUint32(&q.enID, enID, enID+1) {
+			atomic.StoreUint32(&q.deID, enID)
 			q.deID = q.enID
 			break
 		}
