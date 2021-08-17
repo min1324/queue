@@ -117,7 +117,7 @@ func (q *LRQueue) DeQueue() (value interface{}, ok bool) {
 
 // Cap return queue's cap
 func (q *LRQueue) Cap() int {
-	return int(q.cap)
+	return int(atomic.LoadUint32(&q.cap))
 }
 
 // Empty return queue if empty
