@@ -75,12 +75,12 @@ func (q *SRQueue) getSlot(id uint32) *entry {
 }
 
 func (q *SRQueue) EnQueue(val interface{}) bool {
+	q.Init()
 	if q.Full() {
 		return false
 	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	q.Init()
 	if q.Full() {
 		return false
 	}
@@ -91,12 +91,12 @@ func (q *SRQueue) EnQueue(val interface{}) bool {
 }
 
 func (q *SRQueue) DeQueue() (val interface{}, ok bool) {
+	q.Init()
 	if q.Empty() {
 		return nil, false
 	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	q.Init()
 	if q.Empty() {
 		return nil, false
 	}
