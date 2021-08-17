@@ -85,7 +85,6 @@ func (q *LRQueue) InitWith(caps ...int) {
 		}
 		if casUint32(&q.enID, enID, enID+1) {
 			atomic.StoreUint32(&q.deID, enID)
-			q.deID = q.enID
 			break
 		}
 	}
