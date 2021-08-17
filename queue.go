@@ -37,7 +37,7 @@ func (q *LRQueue) onceInit() {
 // 无并发初始化
 func (q *LRQueue) init() {
 	if q.cap < 1 {
-		q.cap = 8
+		q.cap = 1 << 8
 	}
 	q.deID = q.enID
 	q.mod = modUint32(q.cap)

@@ -255,6 +255,7 @@ func TestConcurrentInit(t *testing.T) {
 						case <-ctx.Done():
 							return
 						default:
+							s.Init()
 							time.Sleep(time.Millisecond * 10)
 						}
 					}
