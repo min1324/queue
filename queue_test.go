@@ -8,7 +8,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-	"unsafe"
 
 	"github.com/min1324/queue"
 )
@@ -20,12 +19,10 @@ type queueStruct struct {
 
 func queueMap(t *testing.T, test queueStruct) {
 	for _, m := range [...]QInterface{
-		&queue.LLQueue{},
+		&queue.LRQueue{},
 	} {
 		t.Run(fmt.Sprintf("%T", m), func(t *testing.T) {
 			m = reflect.New(reflect.TypeOf(m).Elem()).Interface().(QInterface)
-			m.Init()
-
 			if test.setup != nil {
 				test.setup(t, m)
 			}
@@ -34,118 +31,118 @@ func queueMap(t *testing.T, test queueStruct) {
 	}
 }
 
-func TestInit(t *testing.T) {
+// func TestInit(t *testing.T) {
 
-	queueMap(t, queueStruct{
-		setup: func(t *testing.T, s QInterface) {
-		},
-		perG: func(t *testing.T, s QInterface) {
-			// 初始化测试，
-			if s.Size() != 0 {
-				t.Fatalf("init size != 0 :%d", s.Size())
-			}
+// 	queueMap(t, queueStruct{
+// 		setup: func(t *testing.T, s QInterface) {
+// 		},
+// 		perG: func(t *testing.T, s QInterface) {
+// 			// 初始化测试，
+// 			if s.Size() != 0 {
+// 				t.Fatalf("init size != 0 :%d", s.Size())
+// 			}
 
-			if v, ok := s.DeQueue(); ok {
-				t.Fatalf("init DeQueue != nil :%v", v)
-			}
-			s.Init()
-			if s.Size() != 0 {
-				t.Fatalf("Init err,size!=0,%d", s.Size())
-			}
+// 			if v, ok := s.DeQueue(); ok {
+// 				t.Fatalf("init DeQueue != nil :%v", v)
+// 			}
+// 			s.Init()
+// 			if s.Size() != 0 {
+// 				t.Fatalf("Init err,size!=0,%d", s.Size())
+// 			}
 
-			if v, ok := s.DeQueue(); ok {
-				t.Fatalf("Init DeQueue != nil :%v", v)
-			}
-			s.EnQueue("a")
-			s.EnQueue("a")
-			s.EnQueue("a")
-			s.Init()
-			if s.Size() != 0 {
-				t.Fatalf("after EnQueue Init err,size!=0,%d", s.Size())
-			}
-			if v, ok := s.DeQueue(); ok {
-				t.Fatalf("after EnQueue Init DeQueue != nil :%v", v)
-			}
+// 			if v, ok := s.DeQueue(); ok {
+// 				t.Fatalf("Init DeQueue != nil :%v", v)
+// 			}
+// 			s.EnQueue("a")
+// 			s.EnQueue("a")
+// 			s.EnQueue("a")
+// 			s.Init()
+// 			if s.Size() != 0 {
+// 				t.Fatalf("after EnQueue Init err,size!=0,%d", s.Size())
+// 			}
+// 			if v, ok := s.DeQueue(); ok {
+// 				t.Fatalf("after EnQueue Init DeQueue != nil :%v", v)
+// 			}
 
-			s.Init()
-			// EnQueue,DeQueue测试
-			p := 1
-			s.EnQueue(p)
-			if s.Size() != 1 {
-				t.Fatalf("after EnQueue err,size!=1,%d", s.Size())
-			}
+// 			s.Init()
+// 			// EnQueue,DeQueue测试
+// 			p := 1
+// 			s.EnQueue(p)
+// 			if s.Size() != 1 {
+// 				t.Fatalf("after EnQueue err,size!=1,%d", s.Size())
+// 			}
 
-			if v, ok := s.DeQueue(); !ok || v != p {
-				t.Fatalf("EnQueue want:%d, real:%v", p, v)
-			}
+// 			if v, ok := s.DeQueue(); !ok || v != p {
+// 				t.Fatalf("EnQueue want:%d, real:%v", p, v)
+// 			}
 
-			// size 测试
-			s.Init()
-			var n = 10
-			var esum, dsum int
-			for i := 0; i < n; i++ {
-				if s.EnQueue(i) {
-					esum++
-				}
-			}
-			if s.Size() != esum {
-				t.Fatalf("Size want:%d, real:%v", esum, s.Size())
-			}
-			tk := time.NewTicker(time.Second * 5)
-			defer tk.Stop()
-			exit := false
-			for !exit {
-				select {
-				case <-tk.C:
-					t.Fatalf("size DeQueue timeout,")
-					exit = true
-				default:
-					_, ok := s.DeQueue()
-					if ok {
-						dsum++
-						tk.Reset(time.Second)
-					}
-					if s.Size() == 0 {
-						exit = true
-					}
-				}
-			}
-			if dsum != esum {
-				t.Fatalf("Size enqueue:%d, dequeue:%d,size:%d", esum, dsum, s.Size())
-			}
+// 			// size 测试
+// 			s.Init()
+// 			var n = 10
+// 			var esum, dsum int
+// 			for i := 0; i < n; i++ {
+// 				if s.EnQueue(i) {
+// 					esum++
+// 				}
+// 			}
+// 			if s.Size() != esum {
+// 				t.Fatalf("Size want:%d, real:%v", esum, s.Size())
+// 			}
+// 			tk := time.NewTicker(time.Second * 5)
+// 			defer tk.Stop()
+// 			exit := false
+// 			for !exit {
+// 				select {
+// 				case <-tk.C:
+// 					t.Fatalf("size DeQueue timeout,")
+// 					exit = true
+// 				default:
+// 					_, ok := s.DeQueue()
+// 					if ok {
+// 						dsum++
+// 						tk.Reset(time.Second)
+// 					}
+// 					if s.Size() == 0 {
+// 						exit = true
+// 					}
+// 				}
+// 			}
+// 			if dsum != esum {
+// 				t.Fatalf("Size enqueue:%d, dequeue:%d,size:%d", esum, dsum, s.Size())
+// 			}
 
-			// 储存顺序测试,数组队列可能满
-			// stack顺序反过来
-			s.Init()
-			array := [...]int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
-			for i := range array {
-				s.EnQueue(i)
-				array[i] = i // queue用这种
-				// array[len(array)-i-1] = i  // stack用这种方式
-			}
-			for i := 0; i < len(array); i++ {
-				v, ok := s.DeQueue()
-				if !ok || v != array[i] {
-					t.Fatalf("array want:%d, real:%v", array[i], v)
-				}
-			}
+// 			// 储存顺序测试,数组队列可能满
+// 			// stack顺序反过来
+// 			s.Init()
+// 			array := [...]int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
+// 			for i := range array {
+// 				s.EnQueue(i)
+// 				array[i] = i // queue用这种
+// 				// array[len(array)-i-1] = i  // stack用这种方式
+// 			}
+// 			for i := 0; i < len(array); i++ {
+// 				v, ok := s.DeQueue()
+// 				if !ok || v != array[i] {
+// 					t.Fatalf("array want:%d, real:%v", array[i], v)
+// 				}
+// 			}
 
-			s.Init()
-			// 空值测试
-			var nullPtrs = unsafe.Pointer(nil)
-			s.EnQueue(nullPtrs)
+// 			s.Init()
+// 			// 空值测试
+// 			var nullPtrs = unsafe.Pointer(nil)
+// 			s.EnQueue(nullPtrs)
 
-			if v, ok := s.DeQueue(); !ok || nullPtrs != v {
-				t.Fatalf("EnQueue nil want:%v, real:%v", nullPtrs, v)
-			}
-			var null = new(interface{})
-			s.EnQueue(null)
-			if v, ok := s.DeQueue(); !ok || null != v {
-				t.Fatalf("EnQueue nil want:%v, real:%v", null, v)
-			}
-		},
-	})
-}
+// 			if v, ok := s.DeQueue(); !ok || nullPtrs != v {
+// 				t.Fatalf("EnQueue nil want:%v, real:%v", nullPtrs, v)
+// 			}
+// 			var null = new(interface{})
+// 			s.EnQueue(null)
+// 			if v, ok := s.DeQueue(); !ok || null != v {
+// 				t.Fatalf("EnQueue nil want:%v, real:%v", null, v)
+// 			}
+// 		},
+// 	})
+// }
 
 func TestEnQueue(t *testing.T) {
 	const maxSize = 1 << 10
@@ -245,7 +242,6 @@ func TestConcurrentInit(t *testing.T) {
 						case <-ctx.Done():
 							return
 						default:
-							s.Init()
 							time.Sleep(time.Millisecond * 10)
 						}
 					}

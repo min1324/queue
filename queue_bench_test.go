@@ -56,11 +56,10 @@ type bench struct {
 
 func benchMap(b *testing.B, bench bench) {
 	for _, m := range [...]QInterface{
-		&queue.LLQueue{},
+		&queue.LRQueue{},
 	} {
 		b.Run(fmt.Sprintf("%T", m), func(b *testing.B) {
 			m = reflect.New(reflect.TypeOf(m).Elem()).Interface().(QInterface)
-			m.Init()
 
 			// setup
 			if bench.setup != nil {
@@ -75,7 +74,6 @@ func benchMap(b *testing.B, bench bench) {
 				bench.perG(b, pb, (id * b.N), m)
 			})
 			// free
-			m.Init()
 		})
 	}
 }
