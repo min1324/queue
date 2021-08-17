@@ -21,9 +21,9 @@ type queueStruct struct {
 func queueMap(t *testing.T, test queueStruct) {
 	for _, m := range [...]QInterface{
 		// &queue.LRQueue{},
-		&queue.DRQueue{},
+		// &queue.DRQueue{},
 		// &queue.LRQueue{},
-		// &queue.SLQueue{},
+		&queue.SLQueue{},
 		// &queue.SRQueue{},
 	} {
 		t.Run(fmt.Sprintf("%T", m), func(t *testing.T) {
