@@ -169,12 +169,14 @@ func (q *LRQueue) Cap() int {
 // 队列是否满
 func (q *LRQueue) Full() bool {
 	// InitWith时，将cap置为0.
-	return q.enID >= q.cap+q.deID
+	deID := atomic.LoadUint32(&q.deID)
+	enID := atomic.LoadUint32(&q.enID)
+	return enID >= q.cap+deID
 }
 
 // 队列是否空
 func (q *LRQueue) Empty() bool {
-	return q.deID >= q.enID
+	return atomic.LoadUint32(&q.deID) == atomic.LoadUint32(&q.enID)
 }
 
 // 溢出环形计算需要，得出2^n-1。(2^n>=u,具体可见kfifo）
