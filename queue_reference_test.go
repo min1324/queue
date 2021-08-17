@@ -18,6 +18,7 @@ var empty = unsafe.Pointer(new(interface{}))
 // QInterface use in stack,queue testing
 type QInterface interface {
 	Size() int
+	Init()
 	EnQueue(interface{}) bool
 	DeQueue() (interface{}, bool)
 }
