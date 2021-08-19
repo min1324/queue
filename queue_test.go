@@ -20,13 +20,13 @@ type queueStruct struct {
 
 func queueMap(t *testing.T, test queueStruct) {
 	for _, m := range [...]QInterface{
-		&queue.LRQueue{},
+		&queue.Queue{},
 		&DRQueue{},
 	} {
 		t.Run(fmt.Sprintf("%T", m), func(t *testing.T) {
 			m = reflect.New(reflect.TypeOf(m).Elem()).Interface().(QInterface)
 			if test.setup != nil {
-				if v, ok := m.(*queue.LRQueue); ok {
+				if v, ok := m.(*queue.Queue); ok {
 					v.OnceInit(prevEnQueueSize)
 				}
 				if v, ok := m.(*DRQueue); ok {
@@ -46,6 +46,11 @@ func TestInit(t *testing.T) {
 		},
 		perG: func(t *testing.T, s QInterface) {
 			// 初始化测试，
+			if v, ok := s.(*queue.Queue); ok {
+				if v.Cap() != prevEnQueueSize {
+					t.Fatalf("init Cap != prevEnQueueSize :%d", prevEnQueueSize)
+				}
+			}
 			if s.Size() != 0 {
 				t.Fatalf("init size != 0 :%d", s.Size())
 			}

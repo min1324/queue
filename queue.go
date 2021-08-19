@@ -6,11 +6,23 @@ import (
 	"unsafe"
 )
 
-// 包装nil值。
-var empty = new(interface{})
+const (
+	// initSize init when not provite cap,use initSize
+	initSize = 1 << 8
+)
 
-// LRQueue is a lock-free ring array queue.
-type LRQueue struct {
+// dequeueNil is used in queue to represent interface{}(nil).
+// Since we use nil to represent empty slots, we need a sentinel value
+// to represent nil.
+type queueNil *struct{}
+
+// New return an empty queue.
+func New() *Queue {
+	return &Queue{}
+}
+
+// Queue is a lock-free ring array queue.
+type Queue struct {
 	once sync.Once
 
 	count uint32 // number of element in queue
@@ -22,15 +34,15 @@ type LRQueue struct {
 	// 环形队列，大小必须是2的倍数。
 	// val为空，表示可以EnQUeue,如果是DeQueue操作，表示队列空。
 	// val不为空，表所可以DeQueue,如果是EnQUeue操作，表示队列满了。
-	// 并且只能由EnQUeue将val从nil变成非nil,
-	// 只能由DeQueue将val从非niu变成nil.
+	// 只能由EnQUeue将val从nil变成非nil,
+	// 只能由DeQueue将val从非nil变成nil.
 	data []entry
 }
 
-func (q *LRQueue) onceInit(cap int) {
+func (q *Queue) onceInit(cap int) {
 	q.once.Do(func() {
 		if cap < 1 {
-			cap = 1 << 8
+			cap = initSize
 		}
 		mod := modUint32(uint32(cap))
 		q.mod = mod
@@ -41,33 +53,48 @@ func (q *LRQueue) onceInit(cap int) {
 
 // OnceInit initialize queue use cap
 // it only execute once time.
-// if cap<1, will use 1<<8.
-func (q *LRQueue) OnceInit(cap int) {
+// if cap<1, will use 256.
+func (q *Queue) OnceInit(cap int) {
 	q.onceInit(cap)
 }
 
-// Init initialize queue use default size: 1<<8
+// Init initialize queue use default size: 256
 // it only execute once time.
-func (q *LRQueue) Init() {
-	q.onceInit(1 << 8)
+func (q *Queue) Init() {
+	q.onceInit(initSize)
 }
 
-// Size return current element in queue
-func (q *LRQueue) Size() int {
+// Cap return queue's cap
+func (q *Queue) Cap() int {
+	return int(atomic.LoadUint32(&q.cap))
+}
+
+// Empty return queue if empty
+func (q *Queue) Empty() bool {
+	return atomic.LoadUint32(&q.count) == 0
+}
+
+// Full return queue if full
+func (q *Queue) Full() bool {
+	return atomic.LoadUint32(&q.count) == atomic.LoadUint32(&q.cap)
+}
+
+// Size return current number in queue
+func (q *Queue) Size() int {
 	return int(atomic.LoadUint32(&q.count))
 }
 
 // 根据enID,deID获取进队，出队对应的slot
-func (q *LRQueue) getSlot(id uint32) *entry {
+func (q *Queue) getSlot(id uint32) *entry {
 	return &q.data[id&atomic.LoadUint32(&q.mod)]
 }
 
 // EnQueue put value into queue,
 // it return true if success,or false if queue full.
-func (q *LRQueue) EnQueue(value interface{}) bool {
+func (q *Queue) EnQueue(value interface{}) bool {
 	q.Init()
 	if value == nil {
-		value = empty
+		value = queueNil(nil)
 	}
 	for {
 		enID := atomic.LoadUint32(&q.enID)
@@ -79,7 +106,7 @@ func (q *LRQueue) EnQueue(value interface{}) bool {
 			// queue full,
 			return false
 		}
-		if casUint32(&q.enID, enID, enID+1) {
+		if atomic.CompareAndSwapUint32(&q.enID, enID, enID+1) {
 			slot.store(value)
 			atomic.AddUint32(&q.count, 1)
 			break
@@ -90,7 +117,7 @@ func (q *LRQueue) EnQueue(value interface{}) bool {
 
 // DeQueue get the frist element in queue,
 // it return true if success,or false if queue empty.
-func (q *LRQueue) DeQueue() (value interface{}, ok bool) {
+func (q *Queue) DeQueue() (value interface{}, ok bool) {
 	q.Init()
 	for {
 		deID := atomic.LoadUint32(&q.deID)
@@ -103,31 +130,16 @@ func (q *LRQueue) DeQueue() (value interface{}, ok bool) {
 			// enqueue not yet success,queue empty
 			return nil, false
 		}
-		if casUint32(&q.deID, deID, deID+1) {
+		if atomic.CompareAndSwapUint32(&q.deID, deID, deID+1) {
 			slot.free()
 			atomic.AddUint32(&q.count, ^uint32(0))
 			break
 		}
 	}
-	if value == empty {
+	if value == queueNil(nil) {
 		value = nil
 	}
 	return value, true
-}
-
-// Cap return queue's cap
-func (q *LRQueue) Cap() int {
-	return int(atomic.LoadUint32(&q.cap))
-}
-
-// Empty return queue if empty
-func (q *LRQueue) Empty() bool {
-	return atomic.LoadUint32(&q.count) == 0
-}
-
-// Full return queue if full
-func (q *LRQueue) Full() bool {
-	return atomic.LoadUint32(&q.count) == atomic.LoadUint32(&q.cap)
 }
 
 // entry queue element
@@ -160,8 +172,4 @@ func modUint32(u uint32) uint32 {
 	u |= u >> 8  // 32位类型已经足够
 	u |= u >> 16 // 64位
 	return u
-}
-
-func casUint32(p *uint32, old, new uint32) bool {
-	return atomic.CompareAndSwapUint32(p, old, new)
 }

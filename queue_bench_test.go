@@ -28,7 +28,7 @@ type bench struct {
 
 func benchMap(b *testing.B, bench bench) {
 	for _, m := range [...]QInterface{
-		&queue.LRQueue{},
+		&queue.Queue{},
 		&DRQueue{},
 	} {
 		b.Run(fmt.Sprintf("%T", m), func(b *testing.B) {
@@ -36,7 +36,7 @@ func benchMap(b *testing.B, bench bench) {
 
 			// setup
 			if bench.setup != nil {
-				if v, ok := m.(*queue.LRQueue); ok {
+				if v, ok := m.(*queue.Queue); ok {
 					v.OnceInit(prevEnQueueSize)
 				}
 				if v, ok := m.(*DRQueue); ok {
