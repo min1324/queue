@@ -75,9 +75,9 @@ func applyCalls(m Interface, calls []mapCall) (results []mapResult, final map[in
 }
 
 func applyMap(calls []mapCall) ([]mapResult, map[interface{}]interface{}) {
-	var q queue.Queue
+	q := queue.New()
 	q.OnceInit(prevEnQueueSize)
-	return applyCalls(&q, calls)
+	return applyCalls(q, calls)
 }
 
 func applyMutexMap(calls []mapCall) ([]mapResult, map[interface{}]interface{}) {
@@ -192,7 +192,7 @@ func TestInit(t *testing.T) {
 
 			// 空值测试
 			s.EnQueue(nil)
-			if e, ok := s.DeQueue(); !ok {
+			if e, ok := s.DeQueue(); !ok || e != nil {
 				t.Fatalf("EnQueue nil want:%v, real:%v", nil, e)
 			}
 
