@@ -39,6 +39,9 @@ func benchMap(b *testing.B, bench bench) {
 				if v, ok := m.(*queue.LRQueue); ok {
 					v.OnceInit(prevEnQueueSize)
 				}
+				if v, ok := m.(*DRQueue); ok {
+					v.OnceInit(prevEnQueueSize)
+				}
 				bench.setup(b, m)
 			}
 

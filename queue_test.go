@@ -29,6 +29,9 @@ func queueMap(t *testing.T, test queueStruct) {
 				if v, ok := m.(*queue.LRQueue); ok {
 					v.OnceInit(prevEnQueueSize)
 				}
+				if v, ok := m.(*DRQueue); ok {
+					v.OnceInit(prevEnQueueSize)
+				}
 				test.setup(t, m)
 			}
 			test.perG(t, m)
