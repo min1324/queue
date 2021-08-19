@@ -1,6 +1,6 @@
 # queue
 
-[![Build Status](https://travis-ci.com/min1324/queue.svg?branch=main)](https://travis-ci.com/min1324/queue) [![codecov](https://codecov.io/gh/min1324/queue/branch/main/graph/badge.svg)](https://codecov.io/gh/min1324/queue) [![GoDoc](https://godoc.org/github.com/min1324/queue?status.png)](https://godoc.org/github.com/min1324/queue) [![Go Report Card](https://goreportcard.com/badge/github.com/min1324/queue)](https://goreportcard.com/report/github.com/min1324/queue)
+[![Build Status](https://travis-ci.com/min1324/queue.svg?branch=main)](https://travis-ci.com/min1324/queue) [![codecov](https://codecov.io/gh/min1324/queue/branch/main/graph/badge.svg)](https://codecov.io/gh/min1324/queue) [![Go Report Card](https://goreportcard.com/badge/github.com/min1324/queue)](https://goreportcard.com/report/github.com/min1324/queue) [![GoDoc](https://godoc.org/github.com/min1324/queue?status.png)](https://godoc.org/github.com/min1324/queue)
 
 -----
 
