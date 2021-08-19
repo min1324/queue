@@ -3,28 +3,107 @@ package queue_test
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/quick"
 	"time"
 	"unsafe"
 
 	"github.com/min1324/queue"
 )
 
+type mapOp string
+
+const (
+	opEnQueue = mapOp("EnQueue")
+	opDeQueue = mapOp("DeQueue")
+)
+
+var mapOps = [...]mapOp{opEnQueue, opDeQueue}
+
+// mapCall is a quick.Generator for calls on mapInterface.
+type mapCall struct {
+	op mapOp
+	k  interface{}
+}
+
+type mapResult struct {
+	value interface{}
+	ok    bool
+}
+
+func (c mapCall) apply(m Interface) (interface{}, bool) {
+	switch c.op {
+	case opEnQueue:
+		return c.k, m.EnQueue(c.k)
+	case opDeQueue:
+		return m.DeQueue()
+	default:
+		panic("invalid mapOp")
+	}
+}
+
+func randValue(r *rand.Rand) interface{} {
+	b := make([]byte, r.Intn(4))
+	for i := range b {
+		b[i] = 'a' + byte(rand.Intn(26))
+	}
+	return string(b)
+}
+
+func (mapCall) Generate(r *rand.Rand, size int) reflect.Value {
+	c := mapCall{op: mapOps[rand.Intn(len(mapOps))], k: randValue(r)}
+	return reflect.ValueOf(c)
+}
+
+func applyCalls(m Interface, calls []mapCall) (results []mapResult, final map[interface{}]interface{}) {
+	for _, c := range calls {
+		v, ok := c.apply(m)
+		results = append(results, mapResult{v, ok})
+	}
+
+	final = make(map[interface{}]interface{})
+
+	for m.Size() > 0 {
+		v, ok := m.DeQueue()
+		final[v] = ok
+	}
+	return results, final
+}
+
+func applyMap(calls []mapCall) ([]mapResult, map[interface{}]interface{}) {
+	var q queue.Queue
+	q.OnceInit(prevEnQueueSize)
+	return applyCalls(&q, calls)
+}
+
+func applyMutexMap(calls []mapCall) ([]mapResult, map[interface{}]interface{}) {
+	var q DRQueue
+	q.OnceInit(prevEnQueueSize)
+	return applyCalls(&q, calls)
+}
+
+func TestMatchesMutex(t *testing.T) {
+	if err := quick.CheckEqual(applyMap, applyMutexMap, nil); err != nil {
+		t.Error(err)
+	}
+}
+
 type queueStruct struct {
-	setup func(*testing.T, QInterface)
-	perG  func(*testing.T, QInterface)
+	setup func(*testing.T, Interface)
+	perG  func(*testing.T, Interface)
 }
 
 func queueMap(t *testing.T, test queueStruct) {
-	for _, m := range [...]QInterface{
+	for _, m := range [...]Interface{
 		&queue.Queue{},
 		&DRQueue{},
 	} {
 		t.Run(fmt.Sprintf("%T", m), func(t *testing.T) {
-			m = reflect.New(reflect.TypeOf(m).Elem()).Interface().(QInterface)
+			m = reflect.New(reflect.TypeOf(m).Elem()).Interface().(Interface)
 			if test.setup != nil {
 				if v, ok := m.(*queue.Queue); ok {
 					v.OnceInit(prevEnQueueSize)
@@ -42,9 +121,9 @@ func queueMap(t *testing.T, test queueStruct) {
 func TestInit(t *testing.T) {
 
 	queueMap(t, queueStruct{
-		setup: func(t *testing.T, s QInterface) {
+		setup: func(t *testing.T, s Interface) {
 		},
-		perG: func(t *testing.T, s QInterface) {
+		perG: func(t *testing.T, s Interface) {
 			// 初始化测试，
 			if v, ok := s.(*queue.Queue); ok {
 				if v.Cap() != prevEnQueueSize {
@@ -136,9 +215,9 @@ func TestEnQueue(t *testing.T) {
 	const maxSize = 1 << 10
 	var sum int64
 	queueMap(t, queueStruct{
-		setup: func(t *testing.T, s QInterface) {
+		setup: func(t *testing.T, s Interface) {
 		},
-		perG: func(t *testing.T, s QInterface) {
+		perG: func(t *testing.T, s Interface) {
 			sum = 0
 			for i := 0; i < maxSize; i++ {
 				if s.EnQueue(i) {
@@ -157,9 +236,9 @@ func TestDeQueue(t *testing.T) {
 	const maxSize = 1 << 10
 	var sum int64
 	queueMap(t, queueStruct{
-		setup: func(t *testing.T, s QInterface) {
+		setup: func(t *testing.T, s Interface) {
 		},
-		perG: func(t *testing.T, s QInterface) {
+		perG: func(t *testing.T, s Interface) {
 			sum = 0
 			for i := 0; i < maxSize; i++ {
 				if s.EnQueue(i) {
@@ -187,9 +266,9 @@ func TestConcurrentInit(t *testing.T) {
 	var timeout = time.Second * 5
 
 	queueMap(t, queueStruct{
-		setup: func(t *testing.T, s QInterface) {
+		setup: func(t *testing.T, s Interface) {
 		},
-		perG: func(t *testing.T, s QInterface) {
+		perG: func(t *testing.T, s Interface) {
 			var wg sync.WaitGroup
 			ctx, cancle := context.WithTimeout(context.Background(), timeout)
 
@@ -256,9 +335,9 @@ func TestConcurrentEnQueue(t *testing.T) {
 	const maxGo, maxNum = 4, 1 << 8
 
 	queueMap(t, queueStruct{
-		setup: func(t *testing.T, s QInterface) {
+		setup: func(t *testing.T, s Interface) {
 		},
-		perG: func(t *testing.T, s QInterface) {
+		perG: func(t *testing.T, s Interface) {
 			var wg sync.WaitGroup
 			var EnQueueSum int64
 			for i := 0; i < maxGo; i++ {
@@ -295,9 +374,9 @@ func TestConcurrentDeQueue(t *testing.T) {
 	const maxSize = maxGo * maxNum
 
 	queueMap(t, queueStruct{
-		setup: func(t *testing.T, s QInterface) {
+		setup: func(t *testing.T, s Interface) {
 		},
-		perG: func(t *testing.T, s QInterface) {
+		perG: func(t *testing.T, s Interface) {
 			var wg sync.WaitGroup
 			var DeQueueSum int64
 			var EnQueueSum int64
@@ -340,9 +419,9 @@ func TestConcurrentDeQueue(t *testing.T) {
 func TestConcurrentEnQueueDeQueue(t *testing.T) {
 	const maxGo, maxNum = 8, 1 << 15
 	queueMap(t, queueStruct{
-		setup: func(t *testing.T, s QInterface) {
+		setup: func(t *testing.T, s Interface) {
 		},
-		perG: func(t *testing.T, s QInterface) {
+		perG: func(t *testing.T, s Interface) {
 			var DeQueueWG sync.WaitGroup
 			var EnQueueWG sync.WaitGroup
 

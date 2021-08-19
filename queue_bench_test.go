@@ -2,37 +2,25 @@ package queue_test
 
 import (
 	"fmt"
-	"math/rand"
 	"reflect"
-	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/min1324/queue"
 )
 
-type mapQueue string
-
-const (
-	opEnQueue = mapQueue("EnQueue")
-	opDeQueue = mapQueue("DeQueue")
-)
-
-var mapQueues = [...]mapQueue{opEnQueue, opDeQueue}
-
 type bench struct {
-	setup func(*testing.B, QInterface)
-	perG  func(b *testing.B, pb *testing.PB, i int, m QInterface)
+	setup func(*testing.B, Interface)
+	perG  func(b *testing.B, pb *testing.PB, i int, m Interface)
 }
 
 func benchMap(b *testing.B, bench bench) {
-	for _, m := range [...]QInterface{
+	for _, m := range [...]Interface{
 		&queue.Queue{},
 		&DRQueue{},
 	} {
 		b.Run(fmt.Sprintf("%T", m), func(b *testing.B) {
-			m = reflect.New(reflect.TypeOf(m).Elem()).Interface().(QInterface)
+			m = reflect.New(reflect.TypeOf(m).Elem()).Interface().(Interface)
 
 			// setup
 			if bench.setup != nil {
@@ -59,10 +47,10 @@ func benchMap(b *testing.B, bench bench) {
 
 func BenchmarkEnQueue(b *testing.B) {
 	benchMap(b, bench{
-		setup: func(_ *testing.B, m QInterface) {
+		setup: func(_ *testing.B, m Interface) {
 		},
 
-		perG: func(b *testing.B, pb *testing.PB, i int, m QInterface) {
+		perG: func(b *testing.B, pb *testing.PB, i int, m Interface) {
 			for ; pb.Next(); i++ {
 				m.EnQueue(i)
 			}
@@ -74,13 +62,13 @@ func BenchmarkDeQueue(b *testing.B) {
 	// 由于预存的数量<出队数量，无法准确测试dequeue
 	const prevsize = 1 << 20
 	benchMap(b, bench{
-		setup: func(b *testing.B, m QInterface) {
+		setup: func(b *testing.B, m Interface) {
 			for i := 0; i < prevsize; i++ {
 				m.EnQueue(i)
 			}
 		},
 
-		perG: func(b *testing.B, pb *testing.PB, i int, m QInterface) {
+		perG: func(b *testing.B, pb *testing.PB, i int, m Interface) {
 			for ; pb.Next(); i++ {
 				m.DeQueue()
 			}
@@ -91,13 +79,13 @@ func BenchmarkDeQueue(b *testing.B) {
 func BenchmarkBalance(b *testing.B) {
 
 	benchMap(b, bench{
-		setup: func(_ *testing.B, m QInterface) {
+		setup: func(_ *testing.B, m Interface) {
 			for i := 0; i < prevEnQueueSize; i++ {
 				m.EnQueue(i)
 			}
 		},
 
-		perG: func(b *testing.B, pb *testing.PB, i int, m QInterface) {
+		perG: func(b *testing.B, pb *testing.PB, i int, m Interface) {
 			for ; pb.Next(); i++ {
 				m.EnQueue(i)
 				m.DeQueue()
@@ -109,13 +97,13 @@ func BenchmarkBalance(b *testing.B) {
 func BenchmarkInterlace(b *testing.B) {
 
 	benchMap(b, bench{
-		setup: func(_ *testing.B, m QInterface) {
+		setup: func(_ *testing.B, m Interface) {
 			for i := 0; i < prevEnQueueSize; i++ {
 				m.EnQueue(i)
 			}
 		},
 
-		perG: func(b *testing.B, pb *testing.PB, i int, m QInterface) {
+		perG: func(b *testing.B, pb *testing.PB, i int, m Interface) {
 			j := 0
 			for ; pb.Next(); i++ {
 				j += (i & 1)
@@ -124,131 +112,6 @@ func BenchmarkInterlace(b *testing.B) {
 				} else {
 					m.DeQueue()
 				}
-			}
-		},
-	})
-}
-
-func BenchmarkConcurrentDeQueue(b *testing.B) {
-
-	benchMap(b, bench{
-		setup: func(_ *testing.B, m QInterface) {
-		},
-		perG: func(b *testing.B, pb *testing.PB, i int, m QInterface) {
-			var wg sync.WaitGroup
-			exit := make(chan struct{}, 1)
-			defer func() {
-				close(exit)
-				wg.Wait()
-				exit = nil
-			}()
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				for {
-					select {
-					case <-exit:
-						return
-					default:
-						m.EnQueue(1)
-					}
-				}
-			}()
-			for ; pb.Next(); i++ {
-				m.DeQueue()
-			}
-		},
-	})
-}
-
-func BenchmarkConcurrentEnQueue(b *testing.B) {
-
-	benchMap(b, bench{
-		setup: func(_ *testing.B, m QInterface) {
-		},
-		perG: func(b *testing.B, pb *testing.PB, i int, m QInterface) {
-			var wg sync.WaitGroup
-			exit := make(chan struct{}, 1)
-			defer func() {
-				close(exit)
-				wg.Wait()
-				exit = nil
-			}()
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				for {
-					select {
-					case <-exit:
-						return
-					default:
-						m.DeQueue()
-					}
-				}
-			}()
-			for ; pb.Next(); i++ {
-				m.EnQueue(1)
-			}
-		},
-	})
-}
-
-func BenchmarkConcurrentRand(b *testing.B) {
-	rand.Seed(time.Now().Unix())
-
-	benchMap(b, bench{
-		setup: func(_ *testing.B, m QInterface) {
-		},
-		perG: func(b *testing.B, pb *testing.PB, i int, m QInterface) {
-			var wg sync.WaitGroup
-			exit := make(chan struct{}, 1)
-			var j uint64
-			defer func() {
-				close(exit)
-				wg.Wait()
-				exit = nil
-			}()
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				for {
-					select {
-					case <-exit:
-						return
-					default:
-						if (j^9)&1 == 0 {
-							m.EnQueue(j)
-						} else {
-							m.DeQueue()
-						}
-						atomic.AddUint64(&j, 1)
-					}
-				}
-			}()
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				for {
-					select {
-					case <-exit:
-						return
-					default:
-						if (j^2)&1 == 0 {
-							m.EnQueue(j)
-						} else {
-							m.DeQueue()
-						}
-						atomic.AddUint64(&j, 1)
-					}
-				}
-			}()
-			for ; pb.Next(); i++ {
-				if (j^3)&1 == 0 {
-					m.EnQueue(j)
-				} else {
-					m.DeQueue()
-				}
-				atomic.AddUint64(&j, 1)
 			}
 		},
 	})

@@ -27,8 +27,8 @@ const (
 	prevEnQueueSize = 1 << 20 // queue previous EnQueue
 )
 
-// QInterface use in stack,queue testing
-type QInterface interface {
+// Interface use in stack,queue testing
+type Interface interface {
 	Size() int
 	Init()
 	OnceInit(cap int)
@@ -84,23 +84,23 @@ type DRQueue struct {
 	deMu sync.Mutex
 	enMu sync.Mutex
 
-	len uint32
-	cap uint32
-	mod uint32
+	count uint32 // number of element in queue
+	cap   uint32 // 队列容量，自动向上调整至2^n
+	mod   uint32 // cap-1,即2^n-1,用作取slot: data[ID&mod]
+	deID  uint32 // 指向下次取出数据的位置:deID&mod
+	enID  uint32 // 指向下次写入数据的位置:enID&mod
 
-	enID uint32
-	deID uint32
-
+	// 环形队列，大小必须是2的倍数。
 	// val为空，表示可以EnQUeue,如果是DeQueue操作，表示队列空。
 	// val不为空，表所可以DeQueue,如果是EnQUeue操作，表示队列满了。
-	// 并且只能由EnQUeue将val从nil变成非nil,
-	// 只能由DeQueue将val从非niu变成nil.
+	// 只能由EnQUeue将val从nil变成非nil,
+	// 只能由DeQueue将val从非nil变成nil.
 	data []entry
 }
 
 func (q *DRQueue) onceInit(cap int) {
 	q.once.Do(func() {
-		if q.cap < 1 {
+		if cap < 1 {
 			cap = 1 << 8
 		}
 		mod := modUint32(uint32(cap))
@@ -110,35 +110,46 @@ func (q *DRQueue) onceInit(cap int) {
 	})
 }
 
+// OnceInit initialize queue use cap
+// it only execute once time.
+// if cap<1, will use 256.
 func (q *DRQueue) OnceInit(cap int) {
 	q.onceInit(cap)
 }
 
+// Init initialize queue use default size: 256
+// it only execute once time.
 func (q *DRQueue) Init() {
 	q.onceInit(1 << 8)
 }
 
+// Cap return queue's cap
 func (q *DRQueue) Cap() int {
 	return int(atomic.LoadUint32(&q.cap))
 }
 
-func (q *DRQueue) Full() bool {
-	return atomic.LoadUint32(&q.len) == atomic.LoadUint32(&q.cap)
-}
-
+// Empty return queue if empty
 func (q *DRQueue) Empty() bool {
-	return atomic.LoadUint32(&q.len) == 0
+	return atomic.LoadUint32(&q.count) == 0
 }
 
+// Full return queue if full
+func (q *DRQueue) Full() bool {
+	return atomic.LoadUint32(&q.count) == atomic.LoadUint32(&q.cap)
+}
+
+// Size return current number in queue
 func (q *DRQueue) Size() int {
-	return int(atomic.LoadUint32(&q.len))
+	return int(atomic.LoadUint32(&q.count))
 }
 
 // 根据enID,deID获取进队，出队对应的slot
 func (q *DRQueue) getSlot(id uint32) *entry {
-	return &q.data[int(id&atomic.LoadUint32(&q.mod))]
+	return &q.data[id&atomic.LoadUint32(&q.mod)]
 }
 
+// EnQueue put value into queue,
+// it return true if success,or false if queue full.
 func (q *DRQueue) EnQueue(val interface{}) bool {
 	q.Init()
 	if q.Full() {
@@ -159,10 +170,12 @@ func (q *DRQueue) EnQueue(val interface{}) bool {
 	}
 	atomic.AddUint32(&q.enID, 1)
 	slot.store(val)
-	atomic.AddUint32(&q.len, 1)
+	atomic.AddUint32(&q.count, 1)
 	return true
 }
 
+// DeQueue get the frist element in queue,
+// it return true if success,or false if queue empty.
 func (q *DRQueue) DeQueue() (val interface{}, ok bool) {
 	q.Init()
 	if q.Empty() {
@@ -184,6 +197,6 @@ func (q *DRQueue) DeQueue() (val interface{}, ok bool) {
 	}
 	atomic.AddUint32(&q.deID, 1)
 	slot.free()
-	atomic.AddUint32(&q.len, ^uint32(0))
+	atomic.AddUint32(&q.count, ^uint32(0))
 	return val, true
 }
