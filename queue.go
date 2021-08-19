@@ -93,9 +93,6 @@ func (q *Queue) getSlot(id uint32) *entry {
 // it return true if success,or false if queue full.
 func (q *Queue) EnQueue(value interface{}) bool {
 	q.Init()
-	if value == nil {
-		value = queueNil(nil)
-	}
 	for {
 		enID := atomic.LoadUint32(&q.enID)
 		if q.Full() {
@@ -107,6 +104,9 @@ func (q *Queue) EnQueue(value interface{}) bool {
 			return false
 		}
 		if atomic.CompareAndSwapUint32(&q.enID, enID, enID+1) {
+			if value == nil {
+				value = queueNil(nil)
+			}
 			slot.store(value)
 			atomic.AddUint32(&q.count, 1)
 			break
@@ -119,6 +119,9 @@ func (q *Queue) EnQueue(value interface{}) bool {
 // it return true if success,or false if queue empty.
 func (q *Queue) DeQueue() (value interface{}, ok bool) {
 	q.Init()
+	if q.Empty() {
+		return
+	}
 	for {
 		deID := atomic.LoadUint32(&q.deID)
 		if q.Empty() {
