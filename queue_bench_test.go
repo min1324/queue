@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"math/rand"
 	"reflect"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -22,20 +21,6 @@ const (
 
 var mapQueues = [...]mapQueue{opEnQueue, opDeQueue}
 
-/*
-1<< 20~28
-1048576		20
-2097152		21
-4194304		22
-8388608		23
-16777216	24
-33554432	25
-67108864	26
-134217728	27
-268435456	28
-*/
-const prevEnQueueSize = 1 << 20 // queue previous EnQueue
-
 type bench struct {
 	setup func(*testing.B, QInterface)
 	perG  func(b *testing.B, pb *testing.PB, i int, m QInterface)
@@ -44,12 +29,16 @@ type bench struct {
 func benchMap(b *testing.B, bench bench) {
 	for _, m := range [...]QInterface{
 		&queue.LRQueue{},
+		&DRQueue{},
 	} {
 		b.Run(fmt.Sprintf("%T", m), func(b *testing.B) {
 			m = reflect.New(reflect.TypeOf(m).Elem()).Interface().(QInterface)
 
 			// setup
 			if bench.setup != nil {
+				if v, ok := m.(*queue.LRQueue); ok {
+					v.OnceInit(prevEnQueueSize)
+				}
 				bench.setup(b, m)
 			}
 
@@ -96,50 +85,6 @@ func BenchmarkDeQueue(b *testing.B) {
 	})
 }
 
-func BenchmarkMostlyEnQueue(b *testing.B) {
-	const bit = 4
-	const mark = 1<<bit - 1
-	benchMap(b, bench{
-		setup: func(_ *testing.B, m QInterface) {
-			for i := 0; i < prevEnQueueSize; i++ {
-				m.EnQueue(i)
-			}
-		},
-
-		perG: func(b *testing.B, pb *testing.PB, i int, m QInterface) {
-			for ; pb.Next(); i++ {
-				if mark == 0 {
-					m.DeQueue()
-				} else {
-					m.EnQueue(i)
-				}
-			}
-		},
-	})
-}
-
-func BenchmarkMostlyDeQueue(b *testing.B) {
-	const bit = 4
-	const mark = 1<<bit - 1
-	benchMap(b, bench{
-		setup: func(_ *testing.B, m QInterface) {
-			for i := 0; i < prevEnQueueSize; i++ {
-				m.EnQueue(i)
-			}
-		},
-
-		perG: func(b *testing.B, pb *testing.PB, i int, m QInterface) {
-			for ; pb.Next(); i++ {
-				if i&mark == 0 {
-					m.EnQueue(i)
-				} else {
-					m.DeQueue()
-				}
-			}
-		},
-	})
-}
-
 func BenchmarkBalance(b *testing.B) {
 
 	benchMap(b, bench{
@@ -153,27 +98,6 @@ func BenchmarkBalance(b *testing.B) {
 			for ; pb.Next(); i++ {
 				m.EnQueue(i)
 				m.DeQueue()
-			}
-		},
-	})
-}
-
-func BenchmarkCollision(b *testing.B) {
-
-	benchMap(b, bench{
-		setup: func(_ *testing.B, m QInterface) {
-			for i := 0; i < prevEnQueueSize; i++ {
-				m.EnQueue(i)
-			}
-		},
-
-		perG: func(b *testing.B, pb *testing.PB, i int, m QInterface) {
-			for ; pb.Next(); i++ {
-				if i&1 == 0 {
-					m.EnQueue(i)
-				} else {
-					m.DeQueue()
-				}
 			}
 		},
 	})
@@ -206,9 +130,6 @@ func BenchmarkConcurrentDeQueue(b *testing.B) {
 
 	benchMap(b, bench{
 		setup: func(_ *testing.B, m QInterface) {
-			if _, ok := m.(*UnsafeQueue); ok {
-				b.Skip("UnsafeQueue can not test concurrent.")
-			}
 		},
 		perG: func(b *testing.B, pb *testing.PB, i int, m QInterface) {
 			var wg sync.WaitGroup
@@ -241,9 +162,6 @@ func BenchmarkConcurrentEnQueue(b *testing.B) {
 
 	benchMap(b, bench{
 		setup: func(_ *testing.B, m QInterface) {
-			if _, ok := m.(*UnsafeQueue); ok {
-				b.Skip("UnsafeQueue can not test concurrent.")
-			}
 		},
 		perG: func(b *testing.B, pb *testing.PB, i int, m QInterface) {
 			var wg sync.WaitGroup
@@ -277,9 +195,6 @@ func BenchmarkConcurrentRand(b *testing.B) {
 
 	benchMap(b, bench{
 		setup: func(_ *testing.B, m QInterface) {
-			if _, ok := m.(*UnsafeQueue); ok {
-				b.Skip("UnsafeQueue can not test concurrent.")
-			}
 		},
 		perG: func(b *testing.B, pb *testing.PB, i int, m QInterface) {
 			var wg sync.WaitGroup
@@ -331,61 +246,6 @@ func BenchmarkConcurrentRand(b *testing.B) {
 					m.DeQueue()
 				}
 				atomic.AddUint64(&j, 1)
-			}
-		},
-	})
-}
-
-func BenchmarkConcurrentMulRand(b *testing.B) {
-	rand.Seed(time.Now().Unix())
-
-	const size = 1 << 10
-	const mod = size - 1
-	var random [size]int
-
-	for i := range random {
-		random[i] = rand.Intn(10) & 1
-	}
-
-	benchMap(b, bench{
-		setup: func(_ *testing.B, m QInterface) {
-			if _, ok := m.(*UnsafeQueue); ok {
-				b.Skip("UnsafeQueue can not test concurrent.")
-			}
-		},
-		perG: func(b *testing.B, pb *testing.PB, i int, m QInterface) {
-			exit := make(chan struct{}, 1)
-			var wg sync.WaitGroup
-			defer func() {
-				close(exit)
-				wg.Wait()
-				exit = nil
-			}()
-			for g := int64(runtime.GOMAXPROCS(0)); g > 1; g-- {
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					var j uint64
-					for {
-						select {
-						case <-exit:
-							return
-						default:
-							if random[atomic.AddUint64(&j, 1)&mod] == 0 {
-								m.EnQueue(j)
-							} else {
-								m.DeQueue()
-							}
-						}
-					}
-				}()
-			}
-			for ; pb.Next(); i++ {
-				if random[i&mod] == 0 {
-					m.EnQueue(i)
-				} else {
-					m.DeQueue()
-				}
 			}
 		},
 	})

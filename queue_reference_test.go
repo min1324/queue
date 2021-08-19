@@ -2,6 +2,7 @@ package queue_test
 
 import (
 	"sync"
+	"sync/atomic"
 	"unsafe"
 )
 
@@ -10,242 +11,179 @@ const (
 	bit  = 3
 	mod  = 1<<bit - 1
 	null = ^uintptr(0) // -1
-)
 
-// 包装nil值。
-var empty = unsafe.Pointer(new(interface{}))
+	/*
+		1<< 20~28
+		1048576		20
+		2097152		21
+		4194304		22
+		8388608		23
+		16777216	24
+		33554432	25
+		67108864	26
+		134217728	27
+		268435456	28
+	*/
+	prevEnQueueSize = 1 << 20 // queue previous EnQueue
+)
 
 // QInterface use in stack,queue testing
 type QInterface interface {
 	Size() int
 	Init()
+	OnceInit(cap int)
 	EnQueue(interface{}) bool
 	DeQueue() (interface{}, bool)
 }
 
-// node stack,queue node
-type node struct {
-	// p    unsafe.Pointer
-	p    interface{}
-	next *node
+// 溢出环形计算需要，得出2^n-1。(2^n>=u,具体可见kfifo）
+func modUint32(u uint32) uint32 {
+	u -= 1 //兼容0, as min as ,128->127 !255
+	u |= u >> 1
+	u |= u >> 2
+	u |= u >> 4
+	u |= u >> 8  // 32位类型已经足够
+	u |= u >> 16 // 64位
+	return u
 }
 
-func newNode(i interface{}) *node {
-	return &node{p: i}
-	// return &node{p: unsafe.Pointer(&i)}
+// 包装nil值。
+var empty = new(interface{})
+
+// entry queue element
+type entry struct {
+	p unsafe.Pointer
 }
 
-func (n *node) load() interface{} {
-	return n.p
-	//return *(*interface{})(n.p)
-}
-
-// UnsafeQueue queue without mutex
-type UnsafeQueue struct {
-	head, tail *node
-	len        int
-	once       sync.Once
-}
-
-func (q *UnsafeQueue) onceInit() {
-	q.once.Do(func() {
-		q.init()
-	})
-}
-
-func (q *UnsafeQueue) init() {
-	q.head = &node{}
-	q.tail = q.head
-	q.len = 0
-}
-
-func (q *UnsafeQueue) Init() {
-	q.onceInit()
-
-	head := q.head // start element
-	tail := q.tail // end element
-	if head == tail {
-		return
+func (n *entry) load() interface{} {
+	p := atomic.LoadPointer(&n.p)
+	if p == nil {
+		return nil
 	}
-	q.head = q.tail
-	q.len = 0
-	// free queue [s ->...-> e]
-	for head != tail && head != nil {
-		el := head
-		head = el.next
-		el.next = nil
-	}
+	return *(*interface{})(p)
 }
 
-func (q *UnsafeQueue) Full() bool {
-	return false
+func (n *entry) store(i interface{}) {
+	atomic.StorePointer(&n.p, unsafe.Pointer(&i))
 }
 
-func (q *UnsafeQueue) Empty() bool {
-	return q.len == 0
+func (n *entry) free() {
+	atomic.StorePointer(&n.p, nil)
 }
 
-func (q *UnsafeQueue) Size() int {
-	return q.len
-}
-
-func (q *UnsafeQueue) EnQueue(i interface{}) bool {
-	q.onceInit()
-	slot := newNode(i)
-	q.tail.next = slot
-	q.tail = slot
-	q.len += 1
-	return true
-}
-
-func (q *UnsafeQueue) DeQueue() (val interface{}, ok bool) {
-	q.onceInit()
-	if q.head.next == nil {
-		return nil, false
-	}
-	slot := q.head
-	q.head = q.head.next
-	slot.next = nil
-	q.len -= 1
-	val = q.head.load()
-	return val, true
-}
-
-// interface node
-type baseNode struct {
-	p interface{}
-}
-
-func (n *baseNode) load() interface{} {
-	return n.p
-}
-
-func (n *baseNode) store(i interface{}) {
-	n.p = i
-}
-
-func (n *baseNode) free() {
-	n.p = nil
-}
-
-// 链表节点
-type listNode struct {
-	baseNode
-	next *listNode
-}
-
-func newListNode(i interface{}) *listNode {
-	ln := listNode{}
-	ln.store(i)
-	return &ln
-}
-
-func (n *listNode) free() {
-	n.baseNode.free()
-	n.next = nil
-}
-
-// SLQueue unbounded list queue with one mutex
-type SLQueue struct {
+// 双锁环形队列,有固定数组
+// 游标采取先操作，后移动方案。
+// EnQUeue,DeQueue操作时，先操作slot增改value
+// 操作完成后移动deID,enID.
+// 队列空条件为deID==enID
+// 满条件enID^cap==deID
+//
+// DRQueue is an unbounded queue which uses a slice as underlying.
+type DRQueue struct {
 	once sync.Once
-	mu   sync.Mutex
+	deMu sync.Mutex
+	enMu sync.Mutex
 
-	len  int
-	head *listNode
-	tail *listNode
+	len uint32
+	cap uint32
+	mod uint32
+
+	enID uint32
+	deID uint32
+
+	// val为空，表示可以EnQUeue,如果是DeQueue操作，表示队列空。
+	// val不为空，表所可以DeQueue,如果是EnQUeue操作，表示队列满了。
+	// 并且只能由EnQUeue将val从nil变成非nil,
+	// 只能由DeQueue将val从非niu变成nil.
+	data []entry
 }
 
-func (q *SLQueue) onceInit() {
+func (q *DRQueue) onceInit(cap int) {
 	q.once.Do(func() {
-		q.init()
+		if q.cap < 1 {
+			cap = 1 << 8
+		}
+		mod := modUint32(uint32(cap))
+		q.mod = mod
+		q.cap = mod + 1
+		q.data = make([]entry, mod+1)
 	})
 }
 
-func (q *SLQueue) init() {
-	q.head = newListNode(nil)
-	q.tail = q.head
-	q.len = 0
+func (q *DRQueue) OnceInit(cap int) {
+	q.onceInit(cap)
 }
 
-func (q *SLQueue) Init() {
-	q.onceInit()
-	q.mu.Lock()
-	defer q.mu.Unlock()
+func (q *DRQueue) Init() {
+	q.onceInit(1 << 8)
+}
 
-	head := q.head
-	tail := q.tail
-	if head == tail {
-		return
+func (q *DRQueue) Cap() int {
+	return int(atomic.LoadUint32(&q.cap))
+}
+
+func (q *DRQueue) Full() bool {
+	return atomic.LoadUint32(&q.len) == atomic.LoadUint32(&q.cap)
+}
+
+func (q *DRQueue) Empty() bool {
+	return atomic.LoadUint32(&q.len) == 0
+}
+
+func (q *DRQueue) Size() int {
+	return int(atomic.LoadUint32(&q.len))
+}
+
+// 根据enID,deID获取进队，出队对应的slot
+func (q *DRQueue) getSlot(id uint32) *entry {
+	return &q.data[int(id&atomic.LoadUint32(&q.mod))]
+}
+
+func (q *DRQueue) EnQueue(val interface{}) bool {
+	q.Init()
+	if q.Full() {
+		return false
 	}
-	q.head = q.tail
-	q.len = 0
-	for head != tail && head != nil {
-		freeNode := head
-		head = freeNode.next
-		freeNode.free()
+	q.enMu.Lock()
+	defer q.enMu.Unlock()
+	if q.Full() {
+		return false
 	}
-}
-
-func (q *SLQueue) Empty() bool {
-	return q.head == q.tail
-}
-
-func (q *SLQueue) Size() int {
-	return q.len
-}
-
-func (q *SLQueue) EnQueue(val interface{}) bool {
-	q.onceInit()
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
+	slot := q.getSlot(q.enID)
+	if slot.load() != nil {
+		// 队列满了
+		return false
+	}
 	if val == nil {
 		val = empty
 	}
-	// 方案1：tail指向最后一个有效node
-	// slot := newListNode(i)
-	// q.tail.next = slot
-	// q.tail = slot
-
-	// 方案2：tail指向下一个存入的空node
-	slot := q.tail
-	nilNode := newListNode(nil)
-	slot.next = nilNode
-	q.tail = nilNode
+	atomic.AddUint32(&q.enID, 1)
 	slot.store(val)
-
-	q.len++
+	atomic.AddUint32(&q.len, 1)
 	return true
 }
 
-func (q *SLQueue) DeQueue() (val interface{}, ok bool) {
-	q.onceInit()
+func (q *DRQueue) DeQueue() (val interface{}, ok bool) {
+	q.Init()
 	if q.Empty() {
-		return
+		return nil, false
 	}
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
+	q.deMu.Lock()
+	defer q.deMu.Unlock()
 	if q.Empty() {
-		return
+		return nil, false
 	}
-	// 方案1：head指向一个无效哨兵node
-	// slot := q.head
-	// q.head = q.head.next
-	// val = q.head.load()
-
-	// 方案2：head指向下一个取出的有效node
-	slot := q.head
+	slot := q.getSlot(q.deID)
+	if slot.load() == nil {
+		// EnQueue正在写入
+		return nil, false
+	}
 	val = slot.load()
-	if val == nil {
-		return
-	}
-	q.head = slot.next
-
 	if val == empty {
 		val = nil
 	}
-	q.len--
+	atomic.AddUint32(&q.deID, 1)
 	slot.free()
+	atomic.AddUint32(&q.len, ^uint32(0))
 	return val, true
 }

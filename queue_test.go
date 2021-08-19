@@ -20,16 +20,15 @@ type queueStruct struct {
 
 func queueMap(t *testing.T, test queueStruct) {
 	for _, m := range [...]QInterface{
-		// &queue.LRQueue{},
-		// &queue.DRQueue{},
-		// &queue.LRQueue{},
-		// &queue.SLQueue{},
-		&queue.DLQueue{},
-		// &queue.SRQueue{},
+		&queue.LRQueue{},
+		&DRQueue{},
 	} {
 		t.Run(fmt.Sprintf("%T", m), func(t *testing.T) {
 			m = reflect.New(reflect.TypeOf(m).Elem()).Interface().(QInterface)
 			if test.setup != nil {
+				if v, ok := m.(*queue.LRQueue); ok {
+					v.OnceInit(prevEnQueueSize)
+				}
 				test.setup(t, m)
 			}
 			test.perG(t, m)
@@ -41,9 +40,6 @@ func TestInit(t *testing.T) {
 
 	queueMap(t, queueStruct{
 		setup: func(t *testing.T, s QInterface) {
-			if v, ok := s.(*queue.LRQueue); ok {
-				v.OnceInit(1 << 15)
-			}
 		},
 		perG: func(t *testing.T, s QInterface) {
 			// 初始化测试，
@@ -133,9 +129,6 @@ func TestEnQueue(t *testing.T) {
 	var sum int64
 	queueMap(t, queueStruct{
 		setup: func(t *testing.T, s QInterface) {
-			if v, ok := s.(*queue.LRQueue); ok {
-				v.OnceInit(1 << 15)
-			}
 		},
 		perG: func(t *testing.T, s QInterface) {
 			sum = 0
@@ -157,9 +150,6 @@ func TestDeQueue(t *testing.T) {
 	var sum int64
 	queueMap(t, queueStruct{
 		setup: func(t *testing.T, s QInterface) {
-			if v, ok := s.(*queue.LRQueue); ok {
-				v.OnceInit(1 << 15)
-			}
 		},
 		perG: func(t *testing.T, s QInterface) {
 			sum = 0
@@ -190,12 +180,6 @@ func TestConcurrentInit(t *testing.T) {
 
 	queueMap(t, queueStruct{
 		setup: func(t *testing.T, s QInterface) {
-			if _, ok := s.(*UnsafeQueue); ok {
-				t.Skip("UnsafeQueue can not test concurrent.")
-			}
-			if v, ok := s.(*queue.LRQueue); ok {
-				v.OnceInit(1 << 15)
-			}
 		},
 		perG: func(t *testing.T, s QInterface) {
 			var wg sync.WaitGroup
@@ -265,12 +249,6 @@ func TestConcurrentEnQueue(t *testing.T) {
 
 	queueMap(t, queueStruct{
 		setup: func(t *testing.T, s QInterface) {
-			if _, ok := s.(*UnsafeQueue); ok {
-				t.Skip("UnsafeQueue can not test concurrent.")
-			}
-			if v, ok := s.(*queue.LRQueue); ok {
-				v.OnceInit(1 << 15)
-			}
 		},
 		perG: func(t *testing.T, s QInterface) {
 			var wg sync.WaitGroup
@@ -310,12 +288,6 @@ func TestConcurrentDeQueue(t *testing.T) {
 
 	queueMap(t, queueStruct{
 		setup: func(t *testing.T, s QInterface) {
-			if _, ok := s.(*UnsafeQueue); ok {
-				t.Skip("UnsafeQueue can not test concurrent.")
-			}
-			if v, ok := s.(*queue.LRQueue); ok {
-				v.OnceInit(1 << 15)
-			}
 		},
 		perG: func(t *testing.T, s QInterface) {
 			var wg sync.WaitGroup
@@ -361,12 +333,6 @@ func TestConcurrentEnQueueDeQueue(t *testing.T) {
 	const maxGo, maxNum = 8, 1 << 15
 	queueMap(t, queueStruct{
 		setup: func(t *testing.T, s QInterface) {
-			if _, ok := s.(*UnsafeQueue); ok {
-				t.Skip("UnsafeQueue can not test concurrent.")
-			}
-			if v, ok := s.(*queue.LRQueue); ok {
-				v.OnceInit(1 << 15)
-			}
 		},
 		perG: func(t *testing.T, s QInterface) {
 			var DeQueueWG sync.WaitGroup
@@ -386,23 +352,20 @@ func TestConcurrentEnQueueDeQueue(t *testing.T) {
 					}
 				}()
 				DeQueueWG.Add(1)
-				go func(t *testing.T) {
+				go func() {
 					defer DeQueueWG.Done()
 					for {
 						select {
 						case <-exit:
 							return
 						default:
-							v, ok := s.DeQueue()
+							_, ok := s.DeQueue()
 							if ok {
-								if v == nil {
-									t.Fatal("err:v nil")
-								}
 								atomic.AddInt64(&sumDeQueue, 1)
 							}
 						}
 					}
-				}(t)
+				}()
 			}
 			EnQueueWG.Wait()
 			close(exit)
