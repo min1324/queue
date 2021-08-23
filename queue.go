@@ -93,25 +93,30 @@ func (q *Queue) getSlot(id uint32) *entry {
 // it return true if success,or false if queue full.
 func (q *Queue) EnQueue(value interface{}) bool {
 	q.Init()
+	if q.Full() {
+		return false
+	}
+	var slot *entry
 	for {
 		enID := atomic.LoadUint32(&q.enID)
 		if q.Full() {
 			return false
 		}
-		slot := q.getSlot(enID)
+		slot = q.getSlot(enID)
 		if slot.load() != nil {
-			// queue full,
+			// dequeue not finish,queue still full,
 			return false
 		}
 		if atomic.CompareAndSwapUint32(&q.enID, enID, enID+1) {
-			if value == nil {
-				value = queueNil(nil)
-			}
-			slot.store(value)
-			atomic.AddUint32(&q.count, 1)
+			// won the race and get push slot.
 			break
 		}
 	}
+	if value == nil {
+		value = queueNil(nil)
+	}
+	slot.store(value)
+	atomic.AddUint32(&q.count, 1)
 	return true
 }
 
@@ -122,23 +127,27 @@ func (q *Queue) DeQueue() (value interface{}, ok bool) {
 	if q.Empty() {
 		return
 	}
+	var slot *entry
 	for {
 		deID := atomic.LoadUint32(&q.deID)
 		if q.Empty() {
 			return nil, false
 		}
-		slot := q.getSlot(deID)
+		slot = q.getSlot(deID)
+
+		// preload value frist.
 		value = slot.load()
 		if value == nil {
 			// enqueue not yet success,queue empty
 			return nil, false
 		}
 		if atomic.CompareAndSwapUint32(&q.deID, deID, deID+1) {
-			slot.free()
-			atomic.AddUint32(&q.count, ^uint32(0))
+			// won the race and get pop slot.
 			break
 		}
 	}
+	slot.free()
+	atomic.AddUint32(&q.count, ^uint32(0))
 	if value == queueNil(nil) {
 		value = nil
 	}
