@@ -24,7 +24,7 @@ const (
 		134217728	27
 		268435456	28
 	*/
-	prevEnQueueSize = 1 << 20 // queue previous EnQueue
+	prevEnQueueSize = 1 << 23 // queue previous EnQueue
 )
 
 // Interface use in stack,queue testing

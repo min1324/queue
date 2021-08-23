@@ -21,26 +21,22 @@ func benchMap(b *testing.B, bench bench) {
 	} {
 		b.Run(fmt.Sprintf("%T", m), func(b *testing.B) {
 			m = reflect.New(reflect.TypeOf(m).Elem()).Interface().(Interface)
-
+			if v, ok := m.(*queue.Queue); ok {
+				v.OnceInit(prevEnQueueSize)
+			}
+			if v, ok := m.(*DRQueue); ok {
+				v.OnceInit(prevEnQueueSize)
+			}
 			// setup
 			if bench.setup != nil {
-				if v, ok := m.(*queue.Queue); ok {
-					v.OnceInit(prevEnQueueSize)
-				}
-				if v, ok := m.(*DRQueue); ok {
-					v.OnceInit(prevEnQueueSize)
-				}
 				bench.setup(b, m)
 			}
-
 			b.ResetTimer()
-
 			var i int64
 			b.RunParallel(func(pb *testing.PB) {
 				id := int(atomic.AddInt64(&i, 1) - 1)
 				bench.perG(b, pb, (id * b.N), m)
 			})
-			// free
 		})
 	}
 }
@@ -59,11 +55,9 @@ func BenchmarkEnQueue(b *testing.B) {
 }
 
 func BenchmarkDeQueue(b *testing.B) {
-	// 由于预存的数量<出队数量，无法准确测试dequeue
-	const prevsize = 1 << 20
 	benchMap(b, bench{
 		setup: func(b *testing.B, m Interface) {
-			for i := 0; i < prevsize; i++ {
+			for i := 0; i < prevEnQueueSize; i++ {
 				m.EnQueue(i)
 			}
 		},
@@ -94,7 +88,7 @@ func BenchmarkBalance(b *testing.B) {
 	})
 }
 
-func BenchmarkInterlace(b *testing.B) {
+func BenchmarkRand(b *testing.B) {
 
 	benchMap(b, bench{
 		setup: func(_ *testing.B, m Interface) {
@@ -104,10 +98,8 @@ func BenchmarkInterlace(b *testing.B) {
 		},
 
 		perG: func(b *testing.B, pb *testing.PB, i int, m Interface) {
-			j := 0
 			for ; pb.Next(); i++ {
-				j += (i & 1)
-				if j&1 == 0 {
+				if i&1 == 0 {
 					m.EnQueue(i)
 				} else {
 					m.DeQueue()

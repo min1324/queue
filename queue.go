@@ -11,7 +11,7 @@ const (
 	initSize = 1 << 8
 )
 
-// dequeueNil is used in queue to represent interface{}(nil).
+// queueNil is used in queue to represent interface{}(nil).
 // Since we use nil to represent empty slots, we need a sentinel value
 // to represent nil.
 type queueNil *struct{}
