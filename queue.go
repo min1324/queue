@@ -45,8 +45,8 @@ func (q *Queue) onceInit(cap int) {
 			cap = initSize
 		}
 		mod := modUint32(uint32(cap))
-		q.mod = mod
-		q.cap = mod + 1
+		atomic.StoreUint32(&q.mod, mod)
+		atomic.StoreUint32(&q.cap, mod+1)
 		q.data = make([]entry, mod+1)
 	})
 }
