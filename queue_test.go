@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"math/rand"
 	"reflect"
+	"runtime"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/quick"
 	"unsafe"
@@ -205,4 +208,76 @@ func TestInit(t *testing.T) {
 			}
 		},
 	})
+}
+
+func TestConcurrent(t *testing.T) {
+	var wg sync.WaitGroup
+	goNum := runtime.NumCPU()
+	var max = 1000000
+	var q queue.Queue
+	q.OnceInit(max)
+
+	var args = make([]uint32, max)
+	var result sync.Map
+	var done uint32
+
+	for i := range args {
+		args[i] = uint32(i)
+	}
+	// dequeue
+	wg.Add(goNum)
+	for i := 0; i < goNum; i++ {
+		go func() {
+			defer wg.Done()
+			for {
+				if atomic.LoadUint32(&done) == 1 && q.Empty() {
+					break
+				}
+				v, ok := q.DeQueue()
+				if ok {
+					result.Store(v, v)
+				}
+			}
+		}()
+	}
+	// enqueue
+	wg.Add(goNum)
+	var gbCount uint32 = 0
+	for i := 0; i < goNum; i++ {
+		go func() {
+			defer wg.Done()
+			for {
+				c := atomic.AddUint32(&gbCount, 1)
+				if c >= uint32(max) {
+					break
+				}
+				for !q.EnQueue(c) {
+				}
+			}
+		}()
+	}
+	// wait until finish enqueue
+	for {
+		c := atomic.LoadUint32(&gbCount)
+		if c > uint32(max) {
+			break
+		}
+		runtime.Gosched()
+	}
+	// wait until dequeue
+	atomic.StoreUint32(&done, 1)
+	wg.Wait()
+
+	if q.Size() > 0 {
+		t.Fatalf("err size !=0,siez:%d\n", q.Size())
+	}
+
+	// check
+	for i := 1; i < max; i++ {
+		e := args[i]
+		v, ok := result.Load(e)
+		if !ok {
+			t.Errorf("err miss:%v,ok:%v,e:%v ", v, ok, e)
+		}
+	}
 }
