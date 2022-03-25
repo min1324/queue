@@ -74,9 +74,9 @@ func applyCalls(m Interface, calls []mapCall) (results []mapResult, final map[in
 }
 
 func applyQueue(calls []mapCall) ([]mapResult, map[interface{}]interface{}) {
-	q := queue.New()
+	var q queue.LFQueue
 	q.OnceInit(prevEnQueueSize)
-	return applyCalls(q, calls)
+	return applyCalls(&q, calls)
 }
 
 func applyMutexQueue(calls []mapCall) ([]mapResult, map[interface{}]interface{}) {
@@ -98,12 +98,12 @@ type queueStruct struct {
 
 func queueMap(t *testing.T, test queueStruct) {
 	for _, m := range [...]Interface{
-		&queue.Queue{},
+		&queue.LFQueue{},
 		&DRQueue{},
 	} {
 		t.Run(fmt.Sprintf("%T", m), func(t *testing.T) {
 			m = reflect.New(reflect.TypeOf(m).Elem()).Interface().(Interface)
-			if v, ok := m.(*queue.Queue); ok {
+			if v, ok := m.(*queue.LFQueue); ok {
 				v.OnceInit(prevEnQueueSize)
 			}
 			if v, ok := m.(*DRQueue); ok {
@@ -124,7 +124,7 @@ func TestInit(t *testing.T) {
 		},
 		perG: func(t *testing.T, s Interface) {
 			// 初始化测试，
-			if v, ok := s.(*queue.Queue); ok {
+			if v, ok := s.(*queue.LFQueue); ok {
 				if v.Cap() != prevEnQueueSize {
 					t.Fatalf("init Cap != prevEnQueueSize :%d", prevEnQueueSize)
 				}
@@ -214,7 +214,7 @@ func TestConcurrent(t *testing.T) {
 	var wg sync.WaitGroup
 	goNum := runtime.NumCPU()
 	var max = 1000000
-	var q queue.Queue
+	var q queue.LFQueue
 	q.OnceInit(max)
 
 	var args = make([]uint32, max)

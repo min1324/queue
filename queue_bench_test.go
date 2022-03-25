@@ -16,12 +16,12 @@ type bench struct {
 
 func benchMap(b *testing.B, bench bench) {
 	for _, m := range [...]Interface{
-		&queue.Queue{},
+		&queue.LFQueue{},
 		&DRQueue{},
 	} {
 		b.Run(fmt.Sprintf("%T", m), func(b *testing.B) {
 			m = reflect.New(reflect.TypeOf(m).Elem()).Interface().(Interface)
-			if v, ok := m.(*queue.Queue); ok {
+			if v, ok := m.(*queue.LFQueue); ok {
 				v.OnceInit(prevEnQueueSize)
 			}
 			if v, ok := m.(*DRQueue); ok {

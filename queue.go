@@ -17,12 +17,24 @@ const (
 type queueNil *struct{}
 
 // New return an empty queue.
-func New() *Queue {
-	return &Queue{}
+func New() Queue {
+	return &TypQueue[any]{}
 }
 
-// Queue is a lock-free ring array queue.
-type Queue struct {
+type Queue interface {
+	EnQueue(value any) bool
+	DeQueue() (value any, ok bool)
+}
+
+var _ Queue = &TypQueue[any]{}
+
+// LFQueue is a lock-free ring array queue.
+type LFQueue struct {
+	TypQueue[any]
+}
+
+// TypQueue is a lock-free ring array queue.
+type TypQueue[T any] struct {
 	once sync.Once
 
 	count uint32 // number of element in queue
@@ -36,10 +48,10 @@ type Queue struct {
 	// val不为空，表所可以DeQueue,如果是EnQUeue操作，表示队列满了。
 	// 只能由EnQUeue将val从nil变成非nil,
 	// 只能由DeQueue将val从非nil变成nil.
-	data []entry
+	data []entry[T]
 }
 
-func (q *Queue) onceInit(cap int) {
+func (q *TypQueue[T]) onceInit(cap int) {
 	q.once.Do(func() {
 		if cap < 1 {
 			cap = initSize
@@ -47,63 +59,64 @@ func (q *Queue) onceInit(cap int) {
 		mod := modUint32(uint32(cap))
 		atomic.StoreUint32(&q.mod, mod)
 		atomic.StoreUint32(&q.cap, mod+1)
-		q.data = make([]entry, mod+1)
+		q.data = make([]entry[T], mod+1)
 	})
 }
 
 // OnceInit initialize queue use cap
 // it only execute once time.
 // if cap<1, will use 256.
-func (q *Queue) OnceInit(cap int) {
+func (q *TypQueue[T]) OnceInit(cap int) {
 	q.onceInit(cap)
 }
 
 // Init initialize queue use default size: 256
 // it only execute once time.
-func (q *Queue) Init() {
+func (q *TypQueue[T]) Init() {
 	q.onceInit(initSize)
 }
 
 // Cap return queue's cap
-func (q *Queue) Cap() int {
+func (q *TypQueue[T]) Cap() int {
 	return int(atomic.LoadUint32(&q.cap))
 }
 
 // Empty return queue if empty
-func (q *Queue) Empty() bool {
+func (q *TypQueue[T]) Empty() bool {
 	return atomic.LoadUint32(&q.count) == 0
 }
 
 // Full return queue if full
-func (q *Queue) Full() bool {
+func (q *TypQueue[T]) Full() bool {
 	return atomic.LoadUint32(&q.count) == atomic.LoadUint32(&q.cap)
 }
 
 // Size return current number in queue
-func (q *Queue) Size() int {
+func (q *TypQueue[T]) Size() int {
 	return int(atomic.LoadUint32(&q.count))
 }
 
 // 根据enID,deID获取进队，出队对应的slot
-func (q *Queue) getSlot(id uint32) *entry {
+func (q *TypQueue[T]) getSlot(id uint32) *entry[T] {
 	return &q.data[id&atomic.LoadUint32(&q.mod)]
 }
 
 // EnQueue put value into queue,
 // it return true if success,or false if queue full.
-func (q *Queue) EnQueue(value interface{}) bool {
+func (q *TypQueue[T]) EnQueue(value T) bool {
 	q.Init()
 	if q.Full() {
 		return false
 	}
-	var slot *entry
+	var slot *entry[T]
 	for {
 		enID := atomic.LoadUint32(&q.enID)
 		if q.Full() {
 			return false
 		}
 		slot = q.getSlot(enID)
-		if slot.load() != nil {
+		_, ok := slot.load()
+		if ok {
 			// dequeue not finish,queue still full,
 			return false
 		}
@@ -112,9 +125,6 @@ func (q *Queue) EnQueue(value interface{}) bool {
 			break
 		}
 	}
-	if value == nil {
-		value = queueNil(nil)
-	}
 	slot.store(value)
 	atomic.AddUint32(&q.count, 1)
 	return true
@@ -122,24 +132,24 @@ func (q *Queue) EnQueue(value interface{}) bool {
 
 // DeQueue get the frist element in queue,
 // it return true if success,or false if queue empty.
-func (q *Queue) DeQueue() (value interface{}, ok bool) {
+func (q *TypQueue[T]) DeQueue() (value T, ok bool) {
 	q.Init()
 	if q.Empty() {
 		return
 	}
-	var slot *entry
+	var slot *entry[T]
 	for {
 		deID := atomic.LoadUint32(&q.deID)
 		if q.Empty() {
-			return nil, false
+			return value, false
 		}
 		slot = q.getSlot(deID)
 
 		// preload value frist.
-		value = slot.load()
-		if value == nil {
+		value, ok = slot.load()
+		if !ok {
 			// enqueue not yet success,queue empty
-			return nil, false
+			return value, false
 		}
 		if atomic.CompareAndSwapUint32(&q.deID, deID, deID+1) {
 			// won the race and get pop slot.
@@ -148,30 +158,27 @@ func (q *Queue) DeQueue() (value interface{}, ok bool) {
 	}
 	slot.free()
 	atomic.AddUint32(&q.count, ^uint32(0))
-	if value == queueNil(nil) {
-		value = nil
-	}
 	return value, true
 }
 
 // entry queue element
-type entry struct {
+type entry[T any] struct {
 	p unsafe.Pointer
 }
 
-func (n *entry) load() interface{} {
+func (n *entry[T]) load() (typ T, ok bool) {
 	p := atomic.LoadPointer(&n.p)
 	if p == nil {
-		return nil
+		return typ, false
 	}
-	return *(*interface{})(p)
+	return *(*T)(p), true
 }
 
-func (n *entry) store(i interface{}) {
+func (n *entry[T]) store(i T) {
 	atomic.StorePointer(&n.p, unsafe.Pointer(&i))
 }
 
-func (n *entry) free() {
+func (n *entry[T]) free() {
 	atomic.StorePointer(&n.p, nil)
 }
 

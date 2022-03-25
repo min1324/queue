@@ -8,14 +8,14 @@ import (
 )
 
 func ExampleInit() {
-	var q queue.Queue
+	var q queue.LFQueue
 	q.OnceInit(20)
 	fmt.Printf("size:%d,cap:%d\n", q.Size(), q.Cap())
 	// Output: size:0,cap:32
 }
 
 func ExampleQueue_enqueue() {
-	var q queue.Queue
+	var q queue.LFQueue
 	q.EnQueue(1)
 
 	fmt.Printf("size:%d\n", q.Size())
