@@ -29,9 +29,7 @@ type Queue interface {
 var _ Queue = &TypQueue[any]{}
 
 // LFQueue is a lock-free ring array queue.
-type LFQueue struct {
-	TypQueue[any]
-}
+type LFQueue = TypQueue[any]
 
 // TypQueue is a lock-free ring array queue.
 type TypQueue[T any] struct {

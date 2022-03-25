@@ -23,7 +23,7 @@ func ExampleQueue_enqueue() {
 }
 
 func ExampleQueue_dequeue() {
-	var q queue.Queue
+	var q queue.LFQueue
 	var m sync.Map
 	var a = 20
 	q.EnQueue(a)
