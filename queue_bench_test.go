@@ -17,16 +17,13 @@ type bench struct {
 func benchMap(b *testing.B, bench bench) {
 	for _, m := range [...]Interface{
 		&queue.LFQueue{},
+		// &queue.LLQueue{},
 		&DRQueue{},
 	} {
 		b.Run(fmt.Sprintf("%T", m), func(b *testing.B) {
 			m = reflect.New(reflect.TypeOf(m).Elem()).Interface().(Interface)
-			if v, ok := m.(*queue.LFQueue); ok {
-				v.OnceInit(prevEnQueueSize)
-			}
-			if v, ok := m.(*DRQueue); ok {
-				v.OnceInit(prevEnQueueSize)
-			}
+
+			m.Init(prevSize)
 			// setup
 			if bench.setup != nil {
 				bench.setup(b, m)
@@ -41,30 +38,30 @@ func benchMap(b *testing.B, bench bench) {
 	}
 }
 
-func BenchmarkEnQueue(b *testing.B) {
+func BenchmarkFull(b *testing.B) {
+	benchMap(b, bench{
+		setup: func(_ *testing.B, m Interface) {
+			for i := 0; i < prevSize; i++ {
+				m.Push(i)
+			}
+		},
+
+		perG: func(b *testing.B, pb *testing.PB, i int, m Interface) {
+			for ; pb.Next(); i++ {
+				m.Push(i)
+			}
+		},
+	})
+}
+
+func BenchmarkEmpty(b *testing.B) {
 	benchMap(b, bench{
 		setup: func(_ *testing.B, m Interface) {
 		},
 
 		perG: func(b *testing.B, pb *testing.PB, i int, m Interface) {
 			for ; pb.Next(); i++ {
-				m.EnQueue(i)
-			}
-		},
-	})
-}
-
-func BenchmarkDeQueue(b *testing.B) {
-	benchMap(b, bench{
-		setup: func(b *testing.B, m Interface) {
-			for i := 0; i < prevEnQueueSize; i++ {
-				m.EnQueue(i)
-			}
-		},
-
-		perG: func(b *testing.B, pb *testing.PB, i int, m Interface) {
-			for ; pb.Next(); i++ {
-				m.DeQueue()
+				m.Pop()
 			}
 		},
 	})
@@ -74,36 +71,15 @@ func BenchmarkBalance(b *testing.B) {
 
 	benchMap(b, bench{
 		setup: func(_ *testing.B, m Interface) {
-			for i := 0; i < prevEnQueueSize; i++ {
-				m.EnQueue(i)
+			for i := 0; i < prevSize/2; i++ {
+				m.Push(i)
 			}
 		},
 
 		perG: func(b *testing.B, pb *testing.PB, i int, m Interface) {
 			for ; pb.Next(); i++ {
-				m.EnQueue(i)
-				m.DeQueue()
-			}
-		},
-	})
-}
-
-func BenchmarkRand(b *testing.B) {
-
-	benchMap(b, bench{
-		setup: func(_ *testing.B, m Interface) {
-			for i := 0; i < prevEnQueueSize; i++ {
-				m.EnQueue(i)
-			}
-		},
-
-		perG: func(b *testing.B, pb *testing.PB, i int, m Interface) {
-			for ; pb.Next(); i++ {
-				if i&1 == 0 {
-					m.EnQueue(i)
-				} else {
-					m.DeQueue()
-				}
+				m.Pop()
+				m.Push(i)
 			}
 		},
 	})

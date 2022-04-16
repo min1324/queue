@@ -16,168 +16,183 @@ const (
 // to represent nil.
 type queueNil *struct{}
 
+type any = interface{}
+
 // New return an empty queue.
 func New() Queue {
-	return &TypQueue[any]{}
+	return &LFQueue{}
 }
 
 type Queue interface {
-	EnQueue(value any) bool
-	DeQueue() (value any, ok bool)
+	Interface
+	Cap() int
+	Len() int
+	Init(cap int)
 }
 
-var _ Queue = &TypQueue[any]{}
+type Interface interface {
+	Push(value any) bool
+	Pop() (value any, ok bool)
+}
+
+var _ Queue = &LFQueue{}
 
 // LFQueue is a lock-free ring array queue.
-type LFQueue = TypQueue[any]
-
-// TypQueue is a lock-free ring array queue.
-type TypQueue[T any] struct {
-	once sync.Once
-
-	count uint32 // number of element in queue
-	cap   uint32 // 队列容量，自动向上调整至2^n
-	mod   uint32 // cap-1,即2^n-1,用作取slot: data[ID&mod]
-	deID  uint32 // 指向下次取出数据的位置:deID&mod
-	enID  uint32 // 指向下次写入数据的位置:enID&mod
-
-	// 环形队列，大小必须是2的倍数。
-	// val为空，表示可以EnQUeue,如果是DeQueue操作，表示队列空。
-	// val不为空，表所可以DeQueue,如果是EnQUeue操作，表示队列满了。
-	// 只能由EnQUeue将val从nil变成非nil,
-	// 只能由DeQueue将val从非nil变成nil.
-	data []entry[T]
+type LFQueue struct {
+	count uint32
+	lfQueue
 }
 
-func (q *TypQueue[T]) onceInit(cap int) {
+func (q *LFQueue) Push(value any) bool {
+	if q.lfQueue.Push(value) {
+		atomic.AddUint32(&q.count, 1)
+		return true
+	}
+	return false
+}
+
+func (q *LFQueue) Pop() (value any, ok bool) {
+	value, ok = q.lfQueue.Pop()
+	if ok {
+		atomic.AddUint32(&q.count, ^uint32(0))
+	}
+	return
+}
+
+func (q *LFQueue) Cap() int {
+	return len(q.data)
+}
+
+func (q *LFQueue) Len() int {
+	return int(atomic.LoadUint32(&q.count))
+}
+
+func (q *LFQueue) Init(cap int) {
+	q.lfQueue.Init(cap)
+}
+
+// lfQueue is a lock-free ring array queue.
+type lfQueue struct {
+	once sync.Once
+
+	tail uint32 // 指向下次取出数据的位置:tail&mod
+	head uint32 // 指向下次写入数据的位置:head&mod
+
+	// 环形队列，大小必须是2的倍数。
+	// val为空，表示可以Push,如果是Pop操作，表示队列空。
+	// val不为空，表所可以Pop,如果是Push操作，表示队列满了。
+	// 只能由Push将val从nil变成非nil,
+	// 只能由Pop将val从非nil变成nil.
+	data []eface
+}
+
+// Init initialize queue use cap
+// it only execute once time.
+// if cap<1, will use 256.
+func (q *lfQueue) Init(cap int) {
 	q.once.Do(func() {
 		if cap < 1 {
 			cap = initSize
 		}
-		mod := modUint32(uint32(cap))
-		atomic.StoreUint32(&q.mod, mod)
-		atomic.StoreUint32(&q.cap, mod+1)
-		q.data = make([]entry[T], mod+1)
+		q.data = make([]eface, modUint32(uint32(cap))+1)
 	})
 }
 
-// OnceInit initialize queue use cap
-// it only execute once time.
-// if cap<1, will use 256.
-func (q *TypQueue[T]) OnceInit(cap int) {
-	q.onceInit(cap)
-}
-
-// Init initialize queue use default size: 256
-// it only execute once time.
-func (q *TypQueue[T]) Init() {
-	q.onceInit(initSize)
-}
-
-// Cap return queue's cap
-func (q *TypQueue[T]) Cap() int {
-	return int(atomic.LoadUint32(&q.cap))
-}
-
-// Empty return queue if empty
-func (q *TypQueue[T]) Empty() bool {
-	return atomic.LoadUint32(&q.count) == 0
-}
-
-// Full return queue if full
-func (q *TypQueue[T]) Full() bool {
-	return atomic.LoadUint32(&q.count) == atomic.LoadUint32(&q.cap)
-}
-
-// Size return current number in queue
-func (q *TypQueue[T]) Size() int {
-	return int(atomic.LoadUint32(&q.count))
-}
-
-// 根据enID,deID获取进队，出队对应的slot
-func (q *TypQueue[T]) getSlot(id uint32) *entry[T] {
-	return &q.data[id&atomic.LoadUint32(&q.mod)]
-}
-
-// EnQueue put value into queue,
-// it return true if success,or false if queue full.
-func (q *TypQueue[T]) EnQueue(value T) bool {
-	q.Init()
-	if q.Full() {
-		return false
+// pushHead adds val at the head of the queue.
+// It returns false if the queue is full.
+func (q *lfQueue) Push(val any) bool {
+	if q.data == nil {
+		q.Init(initSize)
 	}
-	var slot *entry[T]
+	var slot *eface
+	mod := uint32(len(q.data) - 1)
 	for {
-		enID := atomic.LoadUint32(&q.enID)
-		if q.Full() {
+		head, tail := atomic.LoadUint32(&q.head), atomic.LoadUint32(&q.tail)
+		if head == mod+1+tail {
+			// Queue is full.
 			return false
 		}
-		slot = q.getSlot(enID)
-		_, ok := slot.load()
-		if ok {
-			// dequeue not finish,queue still full,
+		slot = &q.data[head&mod]
+
+		// Check if the head slot has been released by popTail.
+		typ := atomic.LoadPointer(&slot.typ)
+		if typ != nil {
+			// Another goroutine is still cleaning up the tail, so
+			// the queue is actually still full.
 			return false
 		}
-		if atomic.CompareAndSwapUint32(&q.enID, enID, enID+1) {
-			// won the race and get push slot.
-			break
+		// Increment head. This passes ownership of slot to popTail
+		// and acts as a store barrier for writing the slot.
+		runtime_procPin()
+		if atomic.CompareAndSwapUint32(&q.head, head, head+1) {
+			// The head slot is free, so we own it.
+			if val == nil {
+				val = queueNil(nil)
+			}
+			slot.data = (*eface)(unsafe.Pointer(&val)).data
+			atomic.StorePointer(&slot.typ, (*eface)(unsafe.Pointer(&val)).typ)
+			runtime_procUnpin()
+			return true
 		}
+		runtime_procUnpin()
 	}
-	slot.store(value)
-	atomic.AddUint32(&q.count, 1)
-	return true
 }
 
-// DeQueue get the frist element in queue,
-// it return true if success,or false if queue empty.
-func (q *TypQueue[T]) DeQueue() (value T, ok bool) {
-	q.Init()
-	if q.Empty() {
-		return
+// popTail removes and returns the element at the tail of the queue.
+// It returns false if the queue is empty.
+func (q *lfQueue) Pop() (any, bool) {
+	var slot *eface
+	if q.data == nil {
+		return nil, false
 	}
-	var slot *entry[T]
+	mod := uint32(len(q.data) - 1)
 	for {
-		deID := atomic.LoadUint32(&q.deID)
-		if q.Empty() {
-			return value, false
+		head, tail := atomic.LoadUint32(&q.head), atomic.LoadUint32(&q.tail)
+		if head == tail {
+			// Queue is empty.
+			return nil, false
 		}
-		slot = q.getSlot(deID)
 
-		// preload value frist.
-		value, ok = slot.load()
-		if !ok {
-			// enqueue not yet success,queue empty
-			return value, false
+		// Confirm head and tail (for our speculative check
+		// above) and increment tail. If this succeeds, then
+		// we own the slot at tail.
+		slot = &q.data[tail&mod]
+		// p := atomic.LoadPointer(&slot.p)
+		typ := atomic.LoadPointer(&slot.typ)
+		if typ == nil {
+			// Another goroutine is store head, so
+			// the queue is actually still empty.
+			return nil, false
 		}
-		if atomic.CompareAndSwapUint32(&q.deID, deID, deID+1) {
-			// won the race and get pop slot.
-			break
+		runtime_procPin()
+		if atomic.CompareAndSwapUint32(&q.tail, tail, tail+1) {
+
+			// We now own slot.
+			val := *(*any)(unsafe.Pointer(slot))
+			if val == queueNil(nil) {
+				val = nil
+			}
+
+			// Tell pushHead that we're done with this slot. Zeroing the
+			// slot is also important so we don't leave behind references
+			// that could keep this object live longer than necessary.
+			//
+			// We write to val first and then publish that we're done with
+			// this slot by atomically writing to typ.
+			slot.data = nil
+			atomic.StorePointer(&slot.typ, nil)
+			// atomic.StorePointer(&slot.p, nil)
+			// At this point pushHead owns the slot.
+			runtime_procUnpin()
+			return val, true
 		}
+		runtime_procUnpin()
 	}
-	slot.free()
-	atomic.AddUint32(&q.count, ^uint32(0))
-	return value, true
 }
 
-// entry queue element
-type entry[T any] struct {
-	p unsafe.Pointer
-}
-
-func (n *entry[T]) load() (typ T, ok bool) {
-	p := atomic.LoadPointer(&n.p)
-	if p == nil {
-		return typ, false
-	}
-	return *(*T)(p), true
-}
-
-func (n *entry[T]) store(i T) {
-	atomic.StorePointer(&n.p, unsafe.Pointer(&i))
-}
-
-func (n *entry[T]) free() {
-	atomic.StorePointer(&n.p, nil)
+// eface queue element
+type eface struct {
+	typ, data unsafe.Pointer
 }
 
 // 溢出环形计算需要，得出2^n-1。(2^n>=u,具体可见kfifo）
@@ -190,3 +205,9 @@ func modUint32(u uint32) uint32 {
 	u |= u >> 16 // 64位
 	return u
 }
+
+//go:linkname runtime_procPin runtime.procPin
+func runtime_procPin()
+
+//go:linkname runtime_procUnpin runtime.procUnpin
+func runtime_procUnpin()

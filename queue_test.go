@@ -17,11 +17,11 @@ import (
 type mapOp string
 
 const (
-	opEnQueue = mapOp("EnQueue")
-	opDeQueue = mapOp("DeQueue")
+	opPush = mapOp("Push")
+	opPop  = mapOp("Pop")
 )
 
-var mapOps = [...]mapOp{opEnQueue, opDeQueue}
+var mapOps = [...]mapOp{opPush, opPop}
 
 // mapCall is a quick.Generator for calls on mapInterface.
 type mapCall struct {
@@ -36,10 +36,10 @@ type mapResult struct {
 
 func (c mapCall) apply(m Interface) (interface{}, bool) {
 	switch c.op {
-	case opEnQueue:
-		return c.k, m.EnQueue(c.k)
-	case opDeQueue:
-		return m.DeQueue()
+	case opPush:
+		return c.k, m.Push(c.k)
+	case opPop:
+		return m.Pop()
 	default:
 		panic("invalid mapOp")
 	}
@@ -53,7 +53,7 @@ func randValue(r *rand.Rand) interface{} {
 	return string(b)
 }
 
-func (mapCall) Generate(r *rand.Rand, size int) reflect.Value {
+func (mapCall) Generate(r *rand.Rand, Len int) reflect.Value {
 	c := mapCall{op: mapOps[rand.Intn(len(mapOps))], k: randValue(r)}
 	return reflect.ValueOf(c)
 }
@@ -66,8 +66,8 @@ func applyCalls(m Interface, calls []mapCall) (results []mapResult, final map[in
 
 	final = make(map[interface{}]interface{})
 
-	for m.Size() > 0 {
-		v, ok := m.DeQueue()
+	for m.Len() > 0 {
+		v, ok := m.Pop()
 		final[v] = ok
 	}
 	return results, final
@@ -75,13 +75,13 @@ func applyCalls(m Interface, calls []mapCall) (results []mapResult, final map[in
 
 func applyQueue(calls []mapCall) ([]mapResult, map[interface{}]interface{}) {
 	var q queue.LFQueue
-	q.OnceInit(prevEnQueueSize)
+	q.Init(prevSize)
 	return applyCalls(&q, calls)
 }
 
 func applyMutexQueue(calls []mapCall) ([]mapResult, map[interface{}]interface{}) {
 	var q DRQueue
-	q.OnceInit(prevEnQueueSize)
+	q.Init(prevSize)
 	return applyCalls(&q, calls)
 }
 
@@ -99,16 +99,11 @@ type queueStruct struct {
 func queueMap(t *testing.T, test queueStruct) {
 	for _, m := range [...]Interface{
 		&queue.LFQueue{},
+		// &queue.LLQueue{},
 		&DRQueue{},
 	} {
 		t.Run(fmt.Sprintf("%T", m), func(t *testing.T) {
-			m = reflect.New(reflect.TypeOf(m).Elem()).Interface().(Interface)
-			if v, ok := m.(*queue.LFQueue); ok {
-				v.OnceInit(prevEnQueueSize)
-			}
-			if v, ok := m.(*DRQueue); ok {
-				v.OnceInit(prevEnQueueSize)
-			}
+			m.Init(prevSize)
 			if test.setup != nil {
 				test.setup(t, m)
 			}
@@ -124,87 +119,84 @@ func TestInit(t *testing.T) {
 		},
 		perG: func(t *testing.T, s Interface) {
 			// 初始化测试，
-			if v, ok := s.(*queue.LFQueue); ok {
-				if v.Cap() != prevEnQueueSize {
-					t.Fatalf("init Cap != prevEnQueueSize :%d", prevEnQueueSize)
-				}
-			}
-			if s.Size() != 0 {
-				t.Fatalf("init size != 0 :%d", s.Size())
+			if s.Len() != 0 {
+				t.Fatalf("init Len != 0 :%d", s.Len())
 			}
 
-			if v, ok := s.DeQueue(); ok {
-				t.Fatalf("init DeQueue != nil :%v", v)
+			if v, ok := s.Pop(); ok {
+				t.Fatalf("init Pop != nil :%v", v)
 			}
-			s.Init()
-			if s.Size() != 0 {
-				t.Fatalf("Init err,size!=0,%d", s.Size())
-			}
-
-			if v, ok := s.DeQueue(); ok {
-				t.Fatalf("Init DeQueue != nil :%v", v)
+			s.Init(0)
+			if s.Len() != 0 {
+				t.Fatalf("Init err,Len!=0,%d", s.Len())
 			}
 
-			// EnQueue,DeQueue测试
+			if v, ok := s.Pop(); ok {
+				t.Fatalf("Init Pop != nil :%v", v)
+			}
+
+			// Push,Pop测试
 			p := 1
-			s.EnQueue(p)
-			if s.Size() != 1 {
-				t.Fatalf("after EnQueue err,size!=1,%d", s.Size())
+			if !s.Push(p) {
+				t.Fatalf("Push err,not ok")
+			}
+			if s.Len() != 1 {
+				t.Fatalf("after Push err,Len!=1,%d", s.Len())
 			}
 
-			if v, ok := s.DeQueue(); !ok || v != p {
-				t.Fatalf("EnQueue want:%d, real:%v", p, v)
+			if v, ok := s.Pop(); !ok || v != p {
+				t.Fatalf("Push want:%d, real:%v", p, v)
 			}
 
-			// size 测试
+			// Len 测试
 			var n = 10
 			var esum int
 			for i := 0; i < n; i++ {
-				if s.EnQueue(i) {
+				if s.Push(i) {
 					esum++
 				}
 			}
-			if s.Size() != esum {
-				t.Fatalf("Size want:%d, real:%v", esum, s.Size())
+			if s.Len() != esum {
+				t.Fatalf("Len want:%d, real:%v", esum, s.Len())
 			}
 			for i := 0; i < n; i++ {
-				s.DeQueue()
+				s.Pop()
 			}
-			if s.Size() != 0 {
-				t.Fatalf("Size want:%d, real:%v", 0, s.Size())
+			if s.Len() != 0 {
+				t.Fatalf("Len want:%d, real:%v", 0, s.Len())
 			}
 
 			// 储存顺序测试,数组队列可能满
 			// stack顺序反过来
 			array := [...]int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
 			for i := range array {
-				s.EnQueue(i)
+				s.Push(i)
 				array[i] = i // queue用这种
 				// array[len(array)-i-1] = i  // stack用这种方式
 			}
 			for i := 0; i < len(array); i++ {
-				v, ok := s.DeQueue()
+				v, ok := s.Pop()
 				if !ok || v != array[i] {
 					t.Fatalf("array want:%d, real:%v", array[i], v)
 				}
 			}
 
 			// 空值测试
-			s.EnQueue(nil)
-			if e, ok := s.DeQueue(); !ok || e != nil {
-				t.Fatalf("EnQueue nil want:%v, real:%v", nil, e)
+			s.Push(nil)
+			if e, ok := s.Pop(); !ok || e != nil {
+				t.Fatalf("Push nil want:%v, real:%v", nil, e)
 			}
 
 			var nullPtrs = unsafe.Pointer(nil)
-			s.EnQueue(nullPtrs)
+			s.Push(nullPtrs)
 
-			if v, ok := s.DeQueue(); !ok || nullPtrs != v {
-				t.Fatalf("EnQueue nil want:%v, real:%v", nullPtrs, v)
+			if v, ok := s.Pop(); !ok || nullPtrs != v {
+				t.Fatalf("Push nil want:%v, real:%v", nullPtrs, v)
 			}
 			var null = new(interface{})
-			s.EnQueue(null)
-			if v, ok := s.DeQueue(); !ok || null != v {
-				t.Fatalf("EnQueue nil want:%v, real:%v", null, v)
+			s.Push(null)
+			if v, ok := s.Pop(); !ok || null != v {
+				t.Fatalf("Push nil want:%v, real:%v", null, v)
 			}
 		},
 	})
@@ -215,7 +207,7 @@ func TestConcurrent(t *testing.T) {
 	goNum := runtime.NumCPU()
 	var max = 1000000
 	var q queue.LFQueue
-	q.OnceInit(max)
+	q.Init(max)
 
 	var args = make([]uint32, max)
 	var result sync.Map
@@ -224,23 +216,23 @@ func TestConcurrent(t *testing.T) {
 	for i := range args {
 		args[i] = uint32(i)
 	}
-	// dequeue
+	// Pop
 	wg.Add(goNum)
 	for i := 0; i < goNum; i++ {
 		go func() {
 			defer wg.Done()
 			for {
-				if atomic.LoadUint32(&done) == 1 && q.Empty() {
+				if atomic.LoadUint32(&done) == 1 && q.Len() == 0 {
 					break
 				}
-				v, ok := q.DeQueue()
+				v, ok := q.Pop()
 				if ok {
 					result.Store(v, v)
 				}
 			}
 		}()
 	}
-	// enqueue
+	// Push
 	wg.Add(goNum)
 	var gbCount uint32 = 0
 	for i := 0; i < goNum; i++ {
@@ -251,12 +243,12 @@ func TestConcurrent(t *testing.T) {
 				if c >= uint32(max) {
 					break
 				}
-				for !q.EnQueue(c) {
+				for !q.Push(c) {
 				}
 			}
 		}()
 	}
-	// wait until finish enqueue
+	// wait until finish Push
 	for {
 		c := atomic.LoadUint32(&gbCount)
 		if c > uint32(max) {
@@ -264,12 +256,12 @@ func TestConcurrent(t *testing.T) {
 		}
 		runtime.Gosched()
 	}
-	// wait until dequeue
+	// wait until Pop
 	atomic.StoreUint32(&done, 1)
 	wg.Wait()
 
-	if q.Size() > 0 {
-		t.Fatalf("err size !=0,siez:%d\n", q.Size())
+	if q.Len() > 0 {
+		t.Fatalf("err Len !=0,siez:%d\n", q.Len())
 	}
 
 	// check
@@ -279,5 +271,86 @@ func TestConcurrent(t *testing.T) {
 		if !ok {
 			t.Errorf("err miss:%v,ok:%v,e:%v ", v, ok, e)
 		}
+	}
+}
+
+func TestLFQueue(t *testing.T) {
+	var d queue.LLQueue
+	d.Init(prevSize)
+	testPoolPop(t, &d)
+}
+
+func testPoolPop(t *testing.T, d queue.Queue) {
+	const P = 10
+	var N int = 2e6
+	if testing.Short() {
+		N = 1e3
+	}
+	have := make([]int32, N)
+	var stop int32
+	var wg sync.WaitGroup
+	record := func(val int) {
+		atomic.AddInt32(&have[val], 1)
+		if val == N-1 {
+			atomic.StoreInt32(&stop, 1)
+		}
+	}
+
+	// Start P-1 consumers.
+	for i := 1; i < P; i++ {
+		wg.Add(1)
+		go func() {
+			fail := 0
+			for atomic.LoadInt32(&stop) == 0 {
+				val, ok := d.Pop()
+				if ok {
+					fail = 0
+					record(val.(int))
+				} else {
+					// Speed up the test by
+					// allowing the pusher to run.
+					if fail++; fail%100 == 0 {
+						runtime.Gosched()
+					}
+				}
+			}
+			wg.Done()
+		}()
+	}
+
+	// Start 1 producer.
+	nPopHead := 0
+	wg.Add(1)
+	go func() {
+		for j := 0; j < N; j++ {
+			for !d.Push(j) {
+				// Allow a popper to run.
+				runtime.Gosched()
+			}
+			if j%10 == 0 {
+				val, ok := d.Pop()
+				if ok {
+					nPopHead++
+					record(val.(int))
+				}
+			}
+		}
+		wg.Done()
+	}()
+	wg.Wait()
+
+	// Check results.
+	for i, count := range have {
+		if count != 1 {
+			t.Errorf("expected have[%d] = 1, got %d", i, count)
+		}
+	}
+	// Check that at least some PopHeads succeeded. We skip this
+	// check in short mode because it's common enough that the
+	// queue will stay nearly empty all the time and a PopTail
+	// will happen during the window between every PushHead and
+	// PopHead.
+	if !testing.Short() && nPopHead == 0 {
+		t.Errorf("popHead never succeeded")
 	}
 }

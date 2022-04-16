@@ -4,6 +4,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"unsafe"
+
+	"github.com/min1324/queue"
 )
 
 // use for slice
@@ -24,16 +26,12 @@ const (
 		134217728	27
 		268435456	28
 	*/
-	prevEnQueueSize = 1 << 23 // queue previous EnQueue
+	prevSize = 1 << 23 // queue previous Push
 )
 
 // Interface use in stack,queue testing
 type Interface interface {
-	Size() int
-	Init()
-	OnceInit(cap int)
-	EnQueue(interface{}) bool
-	DeQueue() (interface{}, bool)
+	queue.Queue
 }
 
 // 溢出环形计算需要，得出2^n-1。(2^n>=u,具体可见kfifo）
@@ -73,10 +71,10 @@ func (n *entry) free() {
 
 // 双锁环形队列,有固定数组
 // 游标采取先操作，后移动方案。
-// EnQUeue,DeQueue操作时，先操作slot增改value
-// 操作完成后移动deID,enID.
-// 队列空条件为deID==enID
-// 满条件enID^cap==deID
+// Push,Pop操作时，先操作slot增改value
+// 操作完成后移动tail,head.
+// 队列空条件为tail==head
+// 满条件head^cap==tail
 //
 // DRQueue is an unbounded queue which uses a slice as underlying.
 type DRQueue struct {
@@ -85,82 +83,56 @@ type DRQueue struct {
 	enMu sync.Mutex
 
 	count uint32 // number of element in queue
-	cap   uint32 // 队列容量，自动向上调整至2^n
-	mod   uint32 // cap-1,即2^n-1,用作取slot: data[ID&mod]
-	deID  uint32 // 指向下次取出数据的位置:deID&mod
-	enID  uint32 // 指向下次写入数据的位置:enID&mod
+	tail  uint32 // 指向下次取出数据的位置:tail&mod
+	head  uint32 // 指向下次写入数据的位置:head&mod
 
 	// 环形队列，大小必须是2的倍数。
-	// val为空，表示可以EnQUeue,如果是DeQueue操作，表示队列空。
-	// val不为空，表所可以DeQueue,如果是EnQUeue操作，表示队列满了。
-	// 只能由EnQUeue将val从nil变成非nil,
-	// 只能由DeQueue将val从非nil变成nil.
+	// val为空，表示可以Push,如果是Pop操作，表示队列空。
+	// val不为空，表所可以Pop,如果是Push操作，表示队列满了。
+	// 只能由Push将val从nil变成非nil,
+	// 只能由Pop将val从非nil变成nil.
 	data []entry
 }
 
-func (q *DRQueue) onceInit(cap int) {
+func (q *DRQueue) Init(cap int) {
 	q.once.Do(func() {
 		if cap < 1 {
 			cap = 1 << 8
 		}
 		mod := modUint32(uint32(cap))
-		q.mod = mod
-		q.cap = mod + 1
 		q.data = make([]entry, mod+1)
 	})
 }
 
-// OnceInit initialize queue use cap
-// it only execute once time.
-// if cap<1, will use 256.
-func (q *DRQueue) OnceInit(cap int) {
-	q.onceInit(cap)
-}
-
-// Init initialize queue use default size: 256
-// it only execute once time.
-func (q *DRQueue) Init() {
-	q.onceInit(1 << 8)
-}
-
 // Cap return queue's cap
 func (q *DRQueue) Cap() int {
-	return int(atomic.LoadUint32(&q.cap))
-}
-
-// Empty return queue if empty
-func (q *DRQueue) Empty() bool {
-	return atomic.LoadUint32(&q.count) == 0
-}
-
-// Full return queue if full
-func (q *DRQueue) Full() bool {
-	return atomic.LoadUint32(&q.count) == atomic.LoadUint32(&q.cap)
+	return len(q.data)
 }
 
 // Size return current number in queue
-func (q *DRQueue) Size() int {
+func (q *DRQueue) Len() int {
 	return int(atomic.LoadUint32(&q.count))
 }
 
-// 根据enID,deID获取进队，出队对应的slot
-func (q *DRQueue) getSlot(id uint32) *entry {
-	return &q.data[id&atomic.LoadUint32(&q.mod)]
-}
-
-// EnQueue put value into queue,
+// Push put value into queue,
 // it return true if success,or false if queue full.
-func (q *DRQueue) EnQueue(val interface{}) bool {
-	q.Init()
-	if q.Full() {
+func (q *DRQueue) Push(val interface{}) bool {
+	if q.data == nil {
+		q.Init(1 << 8)
+	}
+	head := atomic.LoadUint32(&q.head)
+	tail := atomic.LoadUint32(&q.tail)
+	if head == tail+uint32(len(q.data)) {
 		return false
 	}
 	q.enMu.Lock()
 	defer q.enMu.Unlock()
-	if q.Full() {
+	head = atomic.LoadUint32(&q.head)
+	tail = atomic.LoadUint32(&q.tail)
+	if head == tail+uint32(len(q.data)) {
 		return false
 	}
-	slot := q.getSlot(q.enID)
+	slot := &q.data[head&uint32(len(q.data)-1)]
 	if slot.load() != nil {
 		// 队列满了
 		return false
@@ -168,34 +140,37 @@ func (q *DRQueue) EnQueue(val interface{}) bool {
 	if val == nil {
 		val = empty
 	}
-	atomic.AddUint32(&q.enID, 1)
+	atomic.AddUint32(&q.head, 1)
 	slot.store(val)
 	atomic.AddUint32(&q.count, 1)
 	return true
 }
 
-// DeQueue get the frist element in queue,
+// Pop get the frist element in queue,
 // it return true if success,or false if queue empty.
-func (q *DRQueue) DeQueue() (val interface{}, ok bool) {
-	q.Init()
-	if q.Empty() {
-		return nil, false
+func (q *DRQueue) Pop() (val interface{}, ok bool) {
+	head := atomic.LoadUint32(&q.head)
+	tail := atomic.LoadUint32(&q.tail)
+	if head == tail {
+		return
 	}
 	q.deMu.Lock()
 	defer q.deMu.Unlock()
-	if q.Empty() {
-		return nil, false
+	head = atomic.LoadUint32(&q.head)
+	tail = atomic.LoadUint32(&q.tail)
+	if head == tail {
+		return
 	}
-	slot := q.getSlot(q.deID)
+	slot := &q.data[tail&uint32(len(q.data)-1)]
 	if slot.load() == nil {
-		// EnQueue正在写入
+		// Push正在写入
 		return nil, false
 	}
 	val = slot.load()
 	if val == empty {
 		val = nil
 	}
-	atomic.AddUint32(&q.deID, 1)
+	atomic.AddUint32(&q.tail, 1)
 	slot.free()
 	atomic.AddUint32(&q.count, ^uint32(0))
 	return val, true
