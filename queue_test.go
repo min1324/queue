@@ -275,7 +275,7 @@ func TestConcurrent(t *testing.T) {
 }
 
 func TestLFQueue(t *testing.T) {
-	var d queue.LLQueue
+	var d queue.LFQueue
 	d.Init(prevSize)
 	testPoolPop(t, &d)
 }
