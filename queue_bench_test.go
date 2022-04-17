@@ -16,15 +16,15 @@ type bench struct {
 
 func benchMap(b *testing.B, bench bench) {
 	for _, m := range [...]Interface{
-		&queue.LFQueue{},
-		// &queue.LLQueue{},
+		// &queue.LF{},
+		&queue.LockFree{},
 		&DRQueue{},
 	} {
 		b.Run(fmt.Sprintf("%T", m), func(b *testing.B) {
 			m = reflect.New(reflect.TypeOf(m).Elem()).Interface().(Interface)
-
 			m.Init(prevSize)
 			// setup
+
 			if bench.setup != nil {
 				bench.setup(b, m)
 			}
@@ -41,6 +41,9 @@ func benchMap(b *testing.B, bench bench) {
 func BenchmarkFull(b *testing.B) {
 	benchMap(b, bench{
 		setup: func(_ *testing.B, m Interface) {
+			// if _, ok := m.(*queue.LLQueue); ok {
+			// 	b.Skip("LLQueue has quadratic running time.")
+			// }
 			for i := 0; i < prevSize; i++ {
 				m.Push(i)
 			}
@@ -71,7 +74,7 @@ func BenchmarkBalance(b *testing.B) {
 
 	benchMap(b, bench{
 		setup: func(_ *testing.B, m Interface) {
-			for i := 0; i < prevSize/2; i++ {
+			for i := 0; i < 2; i++ {
 				m.Push(i)
 			}
 		},

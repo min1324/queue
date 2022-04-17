@@ -20,59 +20,39 @@ type any = interface{}
 
 // New return an empty queue.
 func New() Queue {
-	return &LFQueue{}
+	return &LockFree{}
 }
 
+// Queue interface has count field
 type Queue interface {
 	Interface
+
+	// Cap return queue's cap
 	Cap() int
+
+	// Len return queue's len
 	Len() int
+
+	// Init initialize queue use cap
+	// it only execute once time.
+	// if cap<1, will use 256.
+	// it would auto call in push.
 	Init(cap int)
 }
 
+// Interface queue common interface
 type Interface interface {
+	// Push adds val at the head of the queue.
+	// It returns false if the queue is full.
 	Push(value any) bool
+
+	// Pop removes and returns the element at the tail of the queue.
+	// It returns false if the queue is empty.
 	Pop() (value any, ok bool)
 }
 
-var _ Queue = &LFQueue{}
-
-// LFQueue is a lock-free ring array queue.
-type LFQueue struct {
-	count uint32
-	lfQueue
-}
-
-func (q *LFQueue) Push(value any) bool {
-	if q.lfQueue.Push(value) {
-		atomic.AddUint32(&q.count, 1)
-		return true
-	}
-	return false
-}
-
-func (q *LFQueue) Pop() (value any, ok bool) {
-	value, ok = q.lfQueue.Pop()
-	if ok {
-		atomic.AddUint32(&q.count, ^uint32(0))
-	}
-	return
-}
-
-func (q *LFQueue) Cap() int {
-	return len(q.data)
-}
-
-func (q *LFQueue) Len() int {
-	return int(atomic.LoadUint32(&q.count))
-}
-
-func (q *LFQueue) Init(cap int) {
-	q.lfQueue.Init(cap)
-}
-
-// lfQueue is a lock-free ring array queue.
-type lfQueue struct {
+// LockFree is a lock-free ring array queue.
+type LockFree struct {
 	once sync.Once
 
 	tail uint32 // 指向下次取出数据的位置:tail&mod
@@ -89,7 +69,7 @@ type lfQueue struct {
 // Init initialize queue use cap
 // it only execute once time.
 // if cap<1, will use 256.
-func (q *lfQueue) Init(cap int) {
+func (q *LockFree) Init(cap int) {
 	q.once.Do(func() {
 		if cap < 1 {
 			cap = initSize
@@ -98,9 +78,19 @@ func (q *lfQueue) Init(cap int) {
 	})
 }
 
-// pushHead adds val at the head of the queue.
+// Cap return queue's cap
+func (q *LockFree) Cap() int {
+	return len(q.data)
+}
+
+// Len return queue's len
+func (q *LockFree) Len() int {
+	return int(atomic.LoadUint32(&q.head) - atomic.LoadUint32(&q.tail))
+}
+
+// Push adds val at the head of the queue.
 // It returns false if the queue is full.
-func (q *lfQueue) Push(val any) bool {
+func (q *LockFree) Push(val any) bool {
 	if q.data == nil {
 		q.Init(initSize)
 	}
@@ -138,9 +128,9 @@ func (q *lfQueue) Push(val any) bool {
 	}
 }
 
-// popTail removes and returns the element at the tail of the queue.
+// Pop removes and returns the element at the tail of the queue.
 // It returns false if the queue is empty.
-func (q *lfQueue) Pop() (any, bool) {
+func (q *LockFree) Pop() (any, bool) {
 	var slot *eface
 	if q.data == nil {
 		return nil, false

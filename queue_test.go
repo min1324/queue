@@ -74,7 +74,7 @@ func applyCalls(m Interface, calls []mapCall) (results []mapResult, final map[in
 }
 
 func applyQueue(calls []mapCall) ([]mapResult, map[interface{}]interface{}) {
-	var q queue.LFQueue
+	var q queue.LockFree
 	q.Init(prevSize)
 	return applyCalls(&q, calls)
 }
@@ -98,7 +98,7 @@ type queueStruct struct {
 
 func queueMap(t *testing.T, test queueStruct) {
 	for _, m := range [...]Interface{
-		&queue.LFQueue{},
+		&queue.LockFree{},
 		// &queue.LLQueue{},
 		&DRQueue{},
 	} {
@@ -120,6 +120,9 @@ func TestInit(t *testing.T) {
 		perG: func(t *testing.T, s Interface) {
 			// 初始化测试，
 			if s.Len() != 0 {
+				t.Fatalf("init Len != 0 :%d", s.Len())
+			}
+			if s.Cap() != prevSize {
 				t.Fatalf("init Len != 0 :%d", s.Len())
 			}
 
@@ -206,7 +209,7 @@ func TestConcurrent(t *testing.T) {
 	var wg sync.WaitGroup
 	goNum := runtime.NumCPU()
 	var max = 1000000
-	var q queue.LFQueue
+	var q queue.LockFree
 	q.Init(max)
 
 	var args = make([]uint32, max)
@@ -275,7 +278,7 @@ func TestConcurrent(t *testing.T) {
 }
 
 func TestLFQueue(t *testing.T) {
-	var d queue.LFQueue
+	var d queue.LockFree
 	d.Init(prevSize)
 	testPoolPop(t, &d)
 }
