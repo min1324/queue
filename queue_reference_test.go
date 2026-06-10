@@ -36,6 +36,9 @@ type Interface interface {
 
 // 溢出环形计算需要，得出2^n-1。(2^n>=u,具体可见kfifo）
 func modUint32(u uint32) uint32 {
+	if u == 0 {
+		return 0
+	}
 	u -= 1 //兼容0, as min as ,128->127 !255
 	u |= u >> 1
 	u |= u >> 2
@@ -62,7 +65,11 @@ func (n *entry) load() interface{} {
 }
 
 func (n *entry) store(i interface{}) {
-	atomic.StorePointer(&n.p, unsafe.Pointer(&i))
+	// Copy i to a heap-allocated variable to ensure the pointer
+	// remains valid after store() returns. Without this, &i points
+	// to a stack frame that may be reused.
+	heapI := i
+	atomic.StorePointer(&n.p, unsafe.Pointer(&heapI))
 }
 
 func (n *entry) free() {
@@ -140,8 +147,13 @@ func (q *DRQueue) Push(val interface{}) bool {
 	if val == nil {
 		val = empty
 	}
-	atomic.AddUint32(&q.head, 1)
+	// Write data first, then move head.
+	// This ensures Pop sees data when it observes head has moved.
 	slot.store(val)
+	// Update head and count together within the lock.
+	// count is updated after head so that Len() readers see
+	// a consistent state (head moved implies count incremented).
+	atomic.AddUint32(&q.head, 1)
 	atomic.AddUint32(&q.count, 1)
 	return true
 }
@@ -162,16 +174,64 @@ func (q *DRQueue) Pop() (val interface{}, ok bool) {
 		return
 	}
 	slot := &q.data[tail&uint32(len(q.data)-1)]
-	if slot.load() == nil {
+	val = slot.load()
+	if val == nil {
 		// Push正在写入
 		return nil, false
 	}
-	val = slot.load()
 	if val == empty {
 		val = nil
 	}
-	atomic.AddUint32(&q.tail, 1)
+	// Free the slot first, then move tail.
+	// This ensures Push sees the free slot when it observes tail has moved.
 	slot.free()
+	// Update tail and count together within the lock.
+	// count is updated after tail so that Len() readers see
+	// a consistent state (tail moved implies count decremented).
+	atomic.AddUint32(&q.tail, 1)
 	atomic.AddUint32(&q.count, ^uint32(0))
 	return val, true
+}
+
+// Resize changes the queue capacity to newCap.
+// It returns false if newCap is smaller than the current number
+// of elements in the queue, or if the queue has not been initialized.
+// Resize blocks until all in-flight Push/Pop operations complete,
+// then migrates existing elements to the new backing array.
+func (q *DRQueue) Resize(newCap int) bool {
+	if newCap < 1 {
+		newCap = 1 << 8
+	}
+	// Acquire both locks to ensure no concurrent Push/Pop
+	q.enMu.Lock()
+	defer q.enMu.Unlock()
+	q.deMu.Lock()
+	defer q.deMu.Unlock()
+
+	if q.data == nil {
+		return false
+	}
+
+	currentLen := int(atomic.LoadUint32(&q.count))
+	if newCap < currentLen {
+		return false
+	}
+
+	newMod := modUint32(uint32(newCap))
+	newData := make([]entry, newMod+1)
+
+	oldMod := uint32(len(q.data) - 1)
+
+	// Migrate existing elements from old data to new data.
+	oldTail := atomic.LoadUint32(&q.tail)
+	oldHead := atomic.LoadUint32(&q.head)
+	for i := oldTail; i < oldHead; i++ {
+		oldSlot := &q.data[i&oldMod]
+		newSlot := &newData[i&newMod]
+		newSlot.p = atomic.LoadPointer(&oldSlot.p)
+	}
+
+	q.data = newData
+
+	return true
 }
