@@ -23,7 +23,7 @@ var queueNilVal any = (*nilQueueNil)(nil)
 type any = interface{}
 
 // New 创建并返回一个新的空的无锁队列。
-// 如果未显式初始化，队列将在首次 Push 操作时自动使用默认容量（256）进行初始化。
+// 如果未显式初始化，队列将在首次 Push 操作时自动使用默认容量（255）进行初始化。
 func New() Queue {
 	return &LockFree{}
 }
@@ -47,13 +47,6 @@ type Queue interface {
 	// 如果 cap < 1，将使用默认容量（256）。
 	// 如果未显式调用，将在首次 Push 操作时自动调用。
 	Init(cap int)
-
-	// Resize 将队列容量更改为 newCap。
-	// 如果无法调整容量则返回 false，例如：
-	//   - newCap 小于当前元素数量
-	//   - 队列尚未初始化
-	// 此方法可安全并发调用，但会阻塞直到所有进行中的 Push/Pop 操作完成后再迁移元素。
-	Resize(newCap int) bool
 }
 
 // Interface 定义了队列的基本操作接口。
@@ -74,12 +67,15 @@ type Interface interface {
 // 它为 Push 和 Pop 操作提供高性能的并发访问，无需互斥锁。
 type LockFree struct {
 	once sync.Once
-	mu   sync.Mutex // 保护 Resize 操作
 
-	tail uint64 // 指向下次读取数据的位置 (tail & mod)
-	head uint64 // 指向下次写入数据的位置 (head & mod)
+	cap  uint64 // 队列容量
+	tail uint64 // 指向下次写入数据的位置 (tail & mod)
+	head uint64 // 指向下次读取数据的位置 (head & mod)
 
 	// 环形缓冲区存储，大小始终为2的幂次。
+	//
+	// tail == head+cap 表示队列已满，head == tail 表示队列为空。
+	//
 	// 槽位状态语义：
 	//   - val == nil: 槽位为空（可 Push，对 Pop 表示队列为空）
 	//   - val != nil: 槽位已占用（可 Pop，对 Push 表示队列已满）
@@ -89,11 +85,6 @@ type LockFree struct {
 	data []eface
 }
 
-// Init 使用指定容量初始化队列。
-// 此方法只能调用一次，后续调用无效。
-// 如果 cap < 1，将使用默认容量（256）。
-// 实际容量会向上取整到2的幂次减1。
-// 如果未显式调用，将在首次 Push 操作时自动调用。
 func (q *LockFree) Init(cap int) {
 	q.once.Do(func() {
 		if cap < 1 {
@@ -101,6 +92,7 @@ func (q *LockFree) Init(cap int) {
 		}
 		verifyEfaceLayout()
 		q.data = make([]eface, modUint64(uint64(cap))+1)
+		atomic.StoreUint64(&q.cap, uint64(cap))
 	})
 }
 
@@ -127,86 +119,46 @@ func verifyEfaceLayout() {
 	}
 }
 
-// Cap 返回队列的容量（最多可容纳的元素数量）。
-// 如果队列未初始化，返回 0。
 func (q *LockFree) Cap() int {
-	return len(q.data)
+	return int(atomic.LoadUint64(&q.cap))
 }
 
-// Resize 将队列容量更改为 newCap。
-// 如果 newCap 小于队列中当前的元素数量，或队列尚未初始化，则返回 false。
-// Resize 会阻塞直到所有进行中的 Push/Pop 操作完成，
-// 然后将现有元素迁移到新的底层数组。
-func (q *LockFree) Resize(newCap int) bool {
-	if newCap < 1 {
-		newCap = initSize
-	}
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	if q.data == nil {
-		return false
-	}
-
-	currentLen := int(int64(atomic.LoadUint64(&q.head) - atomic.LoadUint64(&q.tail)))
-	if currentLen < 0 {
-		currentLen = 0
-	}
-	if newCap < currentLen {
-		return false
-	}
-
-	newMod := modUint64(uint64(newCap))
-	newData := make([]eface, newMod+1)
-
-	oldMod := uint64(len(q.data) - 1)
-
-	// 将旧数据中的现有元素迁移到新数据中。
-	oldTail := atomic.LoadUint64(&q.tail)
-	oldHead := atomic.LoadUint64(&q.head)
-	for i := oldTail; i < oldHead; i++ {
-		oldSlot := &q.data[i&oldMod]
-		newSlot := &newData[i&newMod]
-		// 原子读取旧槽位
-		newSlot.typ = atomic.LoadPointer(&oldSlot.typ)
-		newSlot.data = atomic.LoadPointer(&oldSlot.data)
-	}
-
-	// 更新数据指针。由于 mu 互斥锁确保没有并发的 Push/Pop 操作正在进行，所以这是安全的。
-	q.data = newData
-
-	return true
-}
-
-// Len 返回队列中当前的元素数量。
-// 注意：head 和 tail 使用原子操作读取，但由于它们是分开读取的，
-// 在高并发访问下结果可能不准确。负数结果会被钳制为 0。
 func (q *LockFree) Len() int {
-	l := int(int64(atomic.LoadUint64(&q.head) - atomic.LoadUint64(&q.tail)))
-	if l < 0 {
-		return 0
-	}
-	return l
+	return int(atomic.LoadUint64(&q.tail) - atomic.LoadUint64(&q.head))
 }
 
-// Push 将值添加到队列的头部（写入位置）。
-// 如果队列已满，返回 false。
-// 此操作是无锁的，可安全并发使用。
-// 如果队列尚未初始化，将使用默认容量（256）自动初始化。
+func (q *LockFree) IsEmpty() bool {
+	return atomic.LoadUint64(&q.head) == atomic.LoadUint64(&q.tail)
+}
+
+func (q *LockFree) IsFull() bool {
+	return atomic.LoadUint64(&q.tail) == atomic.LoadUint64(&q.head)+uint64(q.Cap())
+}
+
+func (q *LockFree) mod() uint64 {
+	return uint64(len(q.data) - 1)
+}
+
 func (q *LockFree) Push(val any) bool {
+	return q.pushTail(val)
+}
+
+func (q *LockFree) pushTail(val any) bool {
 	if q.data == nil {
 		q.Init(initSize)
 	}
 	var slot *eface
-	mod := uint64(len(q.data) - 1)
+	mod := q.mod()
+	cap := uint64(q.Cap())
 	for {
-		head := atomic.LoadUint64(&q.head)
 		tail := atomic.LoadUint64(&q.tail)
-		if head == mod+1+tail {
+		head := atomic.LoadUint64(&q.head)
+		if tail == head+cap {
+			// if (tail&mod == head&mod) && tail != head {
 			// 队列已满。
 			return false
 		}
-		slot = &q.data[head&mod]
+		slot = &q.data[tail&mod]
 
 		// 检查头部槽位是否已被 popTail 释放。
 		// 如果 typ != nil，表示 Pop 仍在清理此槽位。
@@ -220,8 +172,7 @@ func (q *LockFree) Push(val any) bool {
 		// 递增 head。这将槽位的所有权传递给 popTail，
 		// 并作为写入槽位的存储屏障。
 		runtime_procPin()
-		if atomic.CompareAndSwapUint64(&q.head, head, head+1) {
-			// 头部槽位空闲，我们拥有它。
+		if atomic.CompareAndSwapUint64(&q.tail, tail, tail+1) {
 			if val == nil {
 				val = queueNilVal
 			}
@@ -239,16 +190,16 @@ func (q *LockFree) Push(val any) bool {
 	}
 }
 
-// Pop 从队列的尾部（读取位置）移除并返回元素。
-// 成功返回值和 true，队列为空返回 nil 和 false。
-// 此操作是无锁的，可安全并发使用。
-// 如果队列尚未初始化，返回 nil, false。
 func (q *LockFree) Pop() (any, bool) {
-	var slot *eface
+	return q.popHead()
+}
+
+func (q *LockFree) popHead() (any, bool) {
 	if q.data == nil {
 		return nil, false
 	}
-	mod := uint64(len(q.data) - 1)
+	var slot *eface
+	mod := q.mod()
 	for {
 		head := atomic.LoadUint64(&q.head)
 		tail := atomic.LoadUint64(&q.tail)
@@ -259,7 +210,7 @@ func (q *LockFree) Pop() (any, bool) {
 
 		// 确认 head 和 tail（用于上面的推测性检查）并递增 tail。
 		// 如果成功，我们就拥有 tail 位置的槽位。
-		slot = &q.data[tail&mod]
+		slot = &q.data[head&mod]
 		typ := atomic.LoadPointer(&slot.typ)
 		// 如果 typ == nil，表示 Push 已声明该槽位（head 已移动），
 		// 但尚未完成数据写入（例如，协程在 CAS 和 StorePointer
@@ -270,9 +221,7 @@ func (q *LockFree) Pop() (any, bool) {
 			continue
 		}
 		runtime_procPin()
-		if atomic.CompareAndSwapUint64(&q.tail, tail, tail+1) {
-
-			// 我们现在拥有该槽位。使用原子加载读取两个字段，
+		if atomic.CompareAndSwapUint64(&q.head, head, head+1) {
 			// 以确保正确的内存排序并避免弱排序架构（如 ARM）上的数据竞争。
 			slotTyp := atomic.LoadPointer(&slot.typ)
 			slotData := atomic.LoadPointer(&slot.data)
@@ -308,26 +257,10 @@ type eface struct {
 	typ, data unsafe.Pointer
 }
 
-// modUint32 返回 2^n-1，其中 2^n >= u，用于环形缓冲区的取模计算。
+// modUint64 返回 2^n-1，其中 2^n >= u，用于环形缓冲区的取模计算。
 // 此位操作技术将值向上取整到下一个2的幂次减1，
 // 使得可以通过按位与运算代替除法来实现高效的取模操作。
 // 例如：modUint32(128) = 127，modUint32(129) = 255。
-// 另见：Linux 内核 kfifo 实现。
-func modUint32(u uint32) uint32 {
-	if u == 0 {
-		return 0
-	}
-	u -= 1 // 调整0值：确保最小结果，例如 128 -> 127，而非 255
-	u |= u >> 1
-	u |= u >> 2
-	u |= u >> 4
-	u |= u >> 8  // 32位类型已足够
-	u |= u >> 16 // 处理高16位
-	return u
-}
-
-// modUint64 返回 2^n-1，其中 2^n >= u，用于环形缓冲区的取模计算。
-// 这是 modUint32 的64位版本，增加了对高32位的移位处理。
 // 如果 u 为 0 则返回 0，以避免下溢。
 // 另见：Linux 内核 kfifo 实现。
 func modUint64(u uint64) uint64 {
@@ -344,4 +277,46 @@ func modUint64(u uint64) uint64 {
 	return u
 }
 
+// // Resize 将队列容量更改为 newCap。
+// // 如果 newCap 小于队列中当前的元素数量，或队列尚未初始化，则返回 false。
+// // Resize 会阻塞直到所有进行中的 Push/Pop 操作完成，
+// // 然后将现有元素迁移到新的底层数组。
+// func (q *LockFree) Resize(Cap int) bool {
+// 	q.mu.Lock()
+// 	defer q.mu.Unlock()
+// 	if q.data == nil {
+// 		q.Init(Cap)
+// 		return true
+// 	}
+// 	if Cap < 1 {
+// 		Cap = initSize
+// 	}
+// 	newMod := modUint64(uint64(Cap))
+// 	newCap := newMod + 1
 
+// 	oldMod := q.mod()
+// 	oldHead := atomic.LoadUint64(&q.head)
+// 	oldLen := uint64(q.Len())
+
+// 	// 新容量<当前长度，无法调整。
+// 	if newCap < oldLen {
+// 		return false
+// 	}
+
+// 	newData := make([]eface, newCap)
+
+// 	j := uint64(0)
+// 	for i := oldHead; j < oldLen; j++ {
+// 		oldSlot := &q.data[i&oldMod]
+// 		atomic.StorePointer(&newData[j].data, atomic.LoadPointer(&oldSlot.data))
+// 		atomic.StorePointer(&newData[j].typ, atomic.LoadPointer(&oldSlot.typ))
+// 		i++
+// 	}
+
+// 	// 更新数据指针。由于 mu 互斥锁确保没有并发的 Push/Pop 操作正在进行，所以这是安全的。
+// 	q.data = newData
+// 	atomic.StoreUint64(&q.tail, j)
+// 	atomic.StoreUint64(&q.head, 0)
+
+// 	return true
+// }

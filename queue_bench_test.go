@@ -11,6 +11,8 @@ import (
 	"github.com/min1324/queue"
 )
 
+type DRQueue = queue.DRQueue
+
 // ============================================================
 // 基准测试框架
 // ============================================================
@@ -458,50 +460,4 @@ func BenchmarkMultiProducerConsumer_DRQueue(b *testing.B) {
 			i++
 		}
 	})
-}
-
-// ============================================================
-// Resize 基准测试
-// ============================================================
-
-// BenchmarkResize_LockFree LockFree 队列容量调整性能
-func BenchmarkResize_LockFree(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		var q queue.LockFree
-		q.Init(256)
-		q.Resize(1024)
-	}
-}
-
-// BenchmarkResize_DRQueue DRQueue 队列容量调整性能
-func BenchmarkResize_DRQueue(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		var q DRQueue
-		q.Init(256)
-		q.Resize(1024)
-	}
-}
-
-// BenchmarkResizeWithElements_LockFree 带元素的 LockFree 队列容量调整性能
-func BenchmarkResizeWithElements_LockFree(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		var q queue.LockFree
-		q.Init(256)
-		for j := 0; j < 100; j++ {
-			q.Push(j)
-		}
-		q.Resize(1024)
-	}
-}
-
-// BenchmarkResizeWithElements_DRQueue 带元素的 DRQueue 队列容量调整性能
-func BenchmarkResizeWithElements_DRQueue(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		var q DRQueue
-		q.Init(256)
-		for j := 0; j < 100; j++ {
-			q.Push(j)
-		}
-		q.Resize(1024)
-	}
 }
