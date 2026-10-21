@@ -142,13 +142,13 @@ type LockFree struct {
 	data []entry
 }
 
-func (q *LockFree) Head() *atomic.Uint64 {
-	return &q.head
-}
+// func (q *LockFree) Head() *atomic.Uint64 {
+// 	return &q.head
+// }
 
-func (q *LockFree) Tail() *atomic.Uint64 {
-	return &q.tail
-}
+// func (q *LockFree) Tail() *atomic.Uint64 {
+// 	return &q.tail
+// }
 
 // New 创建并返回一个新的空的无锁队列。
 // 如果未显式初始化，队列将在首次 Push 操作时自动使用默认容量（255）进行初始化。
