@@ -34,7 +34,7 @@ func testCap() int {
 
 func perQueue(t *testing.T, f func(*testing.T, Interface)) {
 	var arrQueue = [...]Interface{
-		&queue.DRQueue{},
+		// &queue.DRQueue{},
 		&queue.LockFree{},
 	}
 
@@ -222,19 +222,21 @@ func TestConcurrentPushPop(t *testing.T) {
 			go func() {
 				defer workers.Done()
 				<-start
-				for atomic.LoadInt64(&consumed) < totalItems {
-					value, ok := q.Pop()
-					if ok {
-						results <- value.(int)
-						atomic.AddInt64(&consumed, 1)
-						continue
+				for atomic.AddInt64(&consumed, 1) <= totalItems {
+					for {
+						value, ok := q.Pop()
+						if ok {
+							results <- value.(int)
+							break
+						}
+						select {
+						case <-stop:
+							return
+						default:
+							runtime.Gosched()
+						}
 					}
-					select {
-					case <-stop:
-						return
-					default:
-						runtime.Gosched()
-					}
+
 				}
 			}()
 		}

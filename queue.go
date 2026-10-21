@@ -10,23 +10,11 @@ import (
 const (
 	// initSize 是未提供容量时的默认队列容量。
 	// 选择2的幂次是为了高效的取模运算。
-	initSize = 1 << 8 // 256
+	initSize  = 1 << 8 // 256
+	maxUint64 = ^uint64(0) >> 2
 )
 
-// queueNilVal 是一个哨兵值，用于在队列中表示 interface{}(nil)。
-// 由于 nil 被用来表示空槽位，我们需要一个用户无法意外构造的哨兵值。
-// 未导出的 nilQueueNil 类型确保外部代码无法创建与 queueNilVal 相等的值。
-type nilQueueNil struct{}
-
-var queueNilVal any = (*nilQueueNil)(nil)
-
 type any = interface{}
-
-// New 创建并返回一个新的空的无锁队列。
-// 如果未显式初始化，队列将在首次 Push 操作时自动使用默认容量（255）进行初始化。
-func New() Queue {
-	return &LockFree{}
-}
 
 // Queue 定义了带有容量管理的无锁队列接口。
 // 它扩展了基本的 Interface 接口，增加了查询和管理队列容量与长度的方法。
@@ -63,14 +51,83 @@ type Interface interface {
 	Pop() (value any, ok bool)
 }
 
+// queueNilVal 是一个哨兵值，用于在队列中表示 interface{}(nil)。
+// 由于 nil 被用来表示空槽位，我们需要一个用户无法意外构造的哨兵值。
+// 未导出的 nilQueueNil 类型确保外部代码无法创建与 queueNilVal 相等的值。
+type nilQueueNil struct{}
+
+var queueNilVal any = (*nilQueueNil)(nil)
+
+var queueNilTyp = (*eface)(unsafe.Pointer(&queueNilVal)).typ
+
+// eface 映射了空接口的运行时内部表示。
+type eface struct {
+	typ, data unsafe.Pointer
+}
+
+// entry queue element
+type entry struct {
+	typ, data unsafe.Pointer
+}
+
+func (n *entry) load() (val any, ok bool) {
+	typ := atomic.LoadPointer(&n.typ)
+	if typ == nil {
+		return nil, false
+	}
+	data := atomic.LoadPointer(&n.data)
+	if typ == queueNilTyp {
+		return nil, true
+	}
+	ef := eface{typ: typ, data: data}
+	tmp := *(*any)(unsafe.Pointer(&ef))
+	return tmp, true
+}
+
+func (n *entry) store(val any) {
+	if val == nil {
+		val = queueNilVal
+	}
+	ef := (*eface)(unsafe.Pointer(&val))
+	// 先写入 data，后写入 typ
+	atomic.StorePointer(&n.data, ef.data)
+	atomic.StorePointer(&n.typ, ef.typ)
+}
+
+func (n *entry) free() {
+	//  先清 typ (撤销守卫，阻止 Pop 继续读取)
+
+	atomic.StorePointer(&n.data, nil)
+	atomic.StorePointer(&n.typ, nil)
+}
+
+func (n *entry) isOccupied() bool {
+	return atomic.LoadPointer(&n.typ) != nil
+}
+
+// verifyEfaceLayout 检查 eface 结构体是否与运行时匹配。
+func verifyEfaceLayout() {
+	var val interface{} = int(42)
+	ep := (*eface)(unsafe.Pointer(&val))
+	if ep.typ == nil || ep.data == nil {
+		panic("queue: eface layout does not match runtime interface layout")
+	}
+	var nilVal interface{}
+	nilEp := (*eface)(unsafe.Pointer(&nilVal))
+	if nilEp.typ != nil || nilEp.data != nil {
+		panic("queue: eface layout does not match runtime nil interface layout")
+	}
+}
+
 // LockFree 是一个无锁环形缓冲区队列的实现。
 // 它为 Push 和 Pop 操作提供高性能的并发访问，无需互斥锁。
 type LockFree struct {
 	once sync.Once
 
-	cap  uint64 // 队列容量
-	tail uint64 // 指向下次写入数据的位置 (tail & mod)
-	head uint64 // 指向下次读取数据的位置 (head & mod)
+	cap  uint64        // 队列容量
+	mask uint64        // 队列容量 - 1
+	tail atomic.Uint64 // 指向下次写入数据的位置 (tail & mod)
+	head atomic.Uint64 // 指向下次读取数据的位置 (head & mod)
 
 	// 环形缓冲区存储，大小始终为2的幂次。
 	//
@@ -82,7 +139,13 @@ type LockFree struct {
 	// 状态转换规则：
 	//   - 只有 Push 能将槽位从 nil 变为非 nil
 	//   - 只有 Pop 能将槽位从非 nil 变为 nil
-	data []eface
+	data []entry
+}
+
+// New 创建并返回一个新的空的无锁队列。
+// 如果未显式初始化，队列将在首次 Push 操作时自动使用默认容量（255）进行初始化。
+func New() Queue {
+	return &LockFree{}
 }
 
 func (q *LockFree) Init(cap int) {
@@ -90,53 +153,28 @@ func (q *LockFree) Init(cap int) {
 		if cap < 1 {
 			cap = initSize
 		}
+		if uint64(cap) > maxUint64 {
+			panic("queue: capacity overflow")
+		}
 		verifyEfaceLayout()
-		q.data = make([]eface, modUint64(uint64(cap))+1)
-		atomic.StoreUint64(&q.cap, uint64(cap))
+		q.mask = modUint64(uint64(cap))
+		q.data = make([]entry, q.mask+1)
+		q.cap = uint64(cap)
+		q.head.Store(0)
+		q.tail.Store(0)
 	})
 }
 
-// verifyEfaceLayout 检查我们的 eface 结构体是否与运行时的
-// interface{} 布局匹配。这是一个构建时和初始化时的安全检查，
-// 用于捕获跨 Go 版本的不兼容性。
-func verifyEfaceLayout() {
-	// 创建一个非 nil 的 interface 值，验证我们的 eface 结构体
-	// 能否正确解码它。
-	var val interface{} = int(42)
-	ep := (*eface)(unsafe.Pointer(&val))
-	if ep.typ == nil || ep.data == nil {
-		panic("queue: eface layout does not match runtime interface layout; " +
-			"this Go version may have changed the internal interface representation. " +
-			"Please file a bug report.")
-	}
-	// 验证 nil interface 的两个字段都为 nil。
-	var nilVal interface{}
-	nilEp := (*eface)(unsafe.Pointer(&nilVal))
-	if nilEp.typ != nil || nilEp.data != nil {
-		panic("queue: eface layout does not match runtime nil interface layout; " +
-			"this Go version may have changed the internal interface representation. " +
-			"Please file a bug report.")
-	}
-}
-
 func (q *LockFree) Cap() int {
-	return int(atomic.LoadUint64(&q.cap))
+	return int(q.cap)
 }
 
 func (q *LockFree) Len() int {
-	return int(atomic.LoadUint64(&q.tail) - atomic.LoadUint64(&q.head))
-}
-
-func (q *LockFree) IsEmpty() bool {
-	return atomic.LoadUint64(&q.head) == atomic.LoadUint64(&q.tail)
-}
-
-func (q *LockFree) IsFull() bool {
-	return atomic.LoadUint64(&q.tail) == atomic.LoadUint64(&q.head)+uint64(q.Cap())
-}
-
-func (q *LockFree) mod() uint64 {
-	return uint64(len(q.data) - 1)
+	l := int(q.tail.Load() - q.head.Load())
+	if l < 0 {
+		return 0
+	}
+	return l
 }
 
 func (q *LockFree) Push(val any) bool {
@@ -147,46 +185,21 @@ func (q *LockFree) pushTail(val any) bool {
 	if q.data == nil {
 		q.Init(initSize)
 	}
-	var slot *eface
-	mod := q.mod()
-	cap := uint64(q.Cap())
 	for {
-		tail := atomic.LoadUint64(&q.tail)
-		head := atomic.LoadUint64(&q.head)
-		if tail == head+cap {
-			// if (tail&mod == head&mod) && tail != head {
-			// 队列已满。
+		tail := q.tail.Load()
+		head := q.head.Load()
+		if tail-head >= q.cap {
 			return false
 		}
-		slot = &q.data[tail&mod]
-
-		// 检查头部槽位是否已被 popTail 释放。
-		// 如果 typ != nil，表示 Pop 仍在清理此槽位。
-		// 自旋等待而不是立即返回 false，
-		// 因为该槽位很快就会可用。
-		typ := atomic.LoadPointer(&slot.typ)
-		if typ != nil {
-			runtime.Gosched()
+		if !q.tail.CompareAndSwap(tail, tail+1) {
 			continue
 		}
-		// 递增 head。这将槽位的所有权传递给 popTail，
-		// 并作为写入槽位的存储屏障。
-		runtime_procPin()
-		if atomic.CompareAndSwapUint64(&q.tail, tail, tail+1) {
-			if val == nil {
-				val = queueNilVal
-			}
-			// 对 typ 和 data 都使用原子存储，以确保
-			// 正确的内存排序和 GC 可见性。
-			// 先写入 data，然后发布 typ 作为存储屏障，
-			// 使数据对 Pop 可见。
-			atomic.StorePointer(&slot.data, (*eface)(unsafe.Pointer(&val)).data)
-			atomic.StorePointer(&slot.typ, (*eface)(unsafe.Pointer(&val)).typ)
-			runtime_procUnpin()
-			return true
+		slot := &q.data[tail&q.mask]
+		for slot.isOccupied() {
+			runtime.Gosched()
 		}
-		runtime_procUnpin()
-		runtime.Gosched()
+		slot.store(val)
+		return true
 	}
 }
 
@@ -198,63 +211,25 @@ func (q *LockFree) popHead() (any, bool) {
 	if q.data == nil {
 		return nil, false
 	}
-	var slot *eface
-	mod := q.mod()
 	for {
-		head := atomic.LoadUint64(&q.head)
-		tail := atomic.LoadUint64(&q.tail)
-		if head == tail {
+		tail := q.tail.Load()
+		head := q.head.Load()
+		if tail == head {
 			// 队列为空。
 			return nil, false
 		}
-
-		// 确认 head 和 tail（用于上面的推测性检查）并递增 tail。
-		// 如果成功，我们就拥有 tail 位置的槽位。
-		slot = &q.data[head&mod]
-		typ := atomic.LoadPointer(&slot.typ)
-		// 如果 typ == nil，表示 Push 已声明该槽位（head 已移动），
-		// 但尚未完成数据写入（例如，协程在 CAS 和 StorePointer
-		// 之间被抢占）。自旋等待而不是立即返回 false，
-		// 因为数据很快就会可用。
-		if typ == nil {
-			runtime.Gosched()
+		if !q.head.CompareAndSwap(head, head+1) {
 			continue
 		}
-		runtime_procPin()
-		if atomic.CompareAndSwapUint64(&q.head, head, head+1) {
-			// 以确保正确的内存排序并避免弱排序架构（如 ARM）上的数据竞争。
-			slotTyp := atomic.LoadPointer(&slot.typ)
-			slotData := atomic.LoadPointer(&slot.data)
-			tmp := eface{typ: slotTyp, data: slotData}
-			val := *(*any)(unsafe.Pointer(&tmp))
-			if val == queueNilVal {
-				val = nil
-			}
-
-			// 通知 pushHead 我们已完成此槽位的使用。清零槽位也很重要，
-			// 这样我们就不会留下可能导致对象存活时间超过必要的引用。
-			//
-			// 我们先清除 data，然后通过原子写入 typ 来发布我们
-			// 已完成此槽位使用的信号。
-			// 两者都必须使用原子存储，以确保正确的内存排序，
-			// 并防止 GC 看到不一致的 eface 状态。
-			atomic.StorePointer(&slot.data, nil)
-			atomic.StorePointer(&slot.typ, nil)
-			// 此时 pushHead 拥有该槽位。
-			runtime_procUnpin()
-			return val, true
+		slot := &q.data[head&q.mask]
+		for !slot.isOccupied() {
+			runtime.Gosched() // 让出时间片，避免忙等待
 		}
-		runtime_procUnpin()
-		runtime.Gosched()
-	}
-}
+		val, ok := slot.load()
+		slot.free()
 
-// eface 映射了空接口（interface{}）的运行时内部表示。
-// 它包含两个 unsafe.Pointer：typ（类型描述符）和 data（值指针）。
-// 此结构体用于对 interface 值进行原子操作，而不会触发
-// 竞态检测器或违反 Go 的内存模型保证。
-type eface struct {
-	typ, data unsafe.Pointer
+		return val, ok
+	}
 }
 
 // modUint64 返回 2^n-1，其中 2^n >= u，用于环形缓冲区的取模计算。
@@ -276,47 +251,3 @@ func modUint64(u uint64) uint64 {
 	u |= u >> 32 // 处理64位类型的高32位
 	return u
 }
-
-// // Resize 将队列容量更改为 newCap。
-// // 如果 newCap 小于队列中当前的元素数量，或队列尚未初始化，则返回 false。
-// // Resize 会阻塞直到所有进行中的 Push/Pop 操作完成，
-// // 然后将现有元素迁移到新的底层数组。
-// func (q *LockFree) Resize(Cap int) bool {
-// 	q.mu.Lock()
-// 	defer q.mu.Unlock()
-// 	if q.data == nil {
-// 		q.Init(Cap)
-// 		return true
-// 	}
-// 	if Cap < 1 {
-// 		Cap = initSize
-// 	}
-// 	newMod := modUint64(uint64(Cap))
-// 	newCap := newMod + 1
-
-// 	oldMod := q.mod()
-// 	oldHead := atomic.LoadUint64(&q.head)
-// 	oldLen := uint64(q.Len())
-
-// 	// 新容量<当前长度，无法调整。
-// 	if newCap < oldLen {
-// 		return false
-// 	}
-
-// 	newData := make([]eface, newCap)
-
-// 	j := uint64(0)
-// 	for i := oldHead; j < oldLen; j++ {
-// 		oldSlot := &q.data[i&oldMod]
-// 		atomic.StorePointer(&newData[j].data, atomic.LoadPointer(&oldSlot.data))
-// 		atomic.StorePointer(&newData[j].typ, atomic.LoadPointer(&oldSlot.typ))
-// 		i++
-// 	}
-
-// 	// 更新数据指针。由于 mu 互斥锁确保没有并发的 Push/Pop 操作正在进行，所以这是安全的。
-// 	q.data = newData
-// 	atomic.StoreUint64(&q.tail, j)
-// 	atomic.StoreUint64(&q.head, 0)
-
-// 	return true
-// }

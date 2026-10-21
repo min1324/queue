@@ -21,7 +21,7 @@ type DRQueue struct {
 	// val不为空，表所可以Pop,如果是Push操作，表示队列满了。
 	// 只能由Push将val从nil变成非nil,
 	// 只能由Pop将val从非nil变成nil.
-	data []entry
+	data []ringEntry
 }
 
 func (q *DRQueue) Init(cap int) {
@@ -29,7 +29,7 @@ func (q *DRQueue) Init(cap int) {
 		if cap < 1 {
 			cap = 1 << 8
 		}
-		q.data = make([]entry, modUint64(uint64(cap))+1)
+		q.data = make([]ringEntry, cap)
 		atomic.StoreUint64(&q.cap, uint64(cap))
 	})
 }
@@ -53,7 +53,7 @@ func (q *DRQueue) IsFull() bool {
 }
 
 func (q *DRQueue) mod() uint64 {
-	return uint64(len(q.data) - 1)
+	return uint64(q.Cap())
 }
 
 func (q *DRQueue) Push(val any) bool {
@@ -69,7 +69,7 @@ func (q *DRQueue) Push(val any) bool {
 		return false
 	}
 	q.data[q.tail].store(val)
-	atomic.StoreUint64(&q.tail, (q.tail+1)&q.mod())
+	q.tail = (q.tail + 1) % q.mod()
 	atomic.AddUint64(&q.len, 1)
 
 	return true
@@ -87,7 +87,10 @@ func (q *DRQueue) Pop() (val any, ok bool) {
 	e := &q.data[q.head]
 	val, ok = e.load()
 	e.free()
-	atomic.StoreUint64(&q.head, (q.head+1)&q.mod())
+	if !ok {
+		panic("DRQueue Pop nil val")
+	}
+	q.head = (q.head + 1) % q.mod()
 	atomic.AddUint64(&q.len, ^uint64(0))
 	return
 }
@@ -96,12 +99,12 @@ type nilentrynil struct{}
 
 var empty any = (*nilentrynil)(nil)
 
-// entry queue element
-type entry struct {
+// ringEntry queue element
+type ringEntry struct {
 	p unsafe.Pointer
 }
 
-func (n *entry) load() (interface{}, bool) {
+func (n *ringEntry) load() (interface{}, bool) {
 	p := atomic.LoadPointer(&n.p)
 	if p == nil {
 		return nil, false
@@ -113,7 +116,7 @@ func (n *entry) load() (interface{}, bool) {
 	return val, true
 }
 
-func (n *entry) store(i interface{}) {
+func (n *ringEntry) store(i interface{}) {
 	// Copy i to a heap-allocated variable to ensure the pointer
 	// remains valid after store() returns. Without this, &i points
 	// to a stack frame that may be reused.
@@ -124,7 +127,7 @@ func (n *entry) store(i interface{}) {
 	atomic.StorePointer(&n.p, unsafe.Pointer(&heapI))
 }
 
-func (n *entry) free() {
+func (n *ringEntry) free() {
 	atomic.StorePointer(&n.p, nil)
 }
 

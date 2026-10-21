@@ -1,4 +1,4 @@
-package queue
+package queue_test
 
 import "testing"
 
@@ -7,8 +7,8 @@ func TestQueueCounterWraparound(t *testing.T) {
 	q.Init(8)
 
 	start := ^uint64(0) - 2
-	q.head = start
-	q.tail = start
+	q.head.Store(start)
+	q.tail.Store(start)
 
 	for i := 0; i < q.Cap(); i++ {
 		if !q.Push(i) {
@@ -16,7 +16,7 @@ func TestQueueCounterWraparound(t *testing.T) {
 		}
 	}
 
-	if q.head <= q.tail {
+	if q.head.Load() <= q.tail.Load() {
 		t.Fatalf("expected head (%d) > tail (%d) after counter wraparound", q.head, q.tail)
 	}
 	if got := q.Len(); got != q.Cap() {
