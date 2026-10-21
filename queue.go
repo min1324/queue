@@ -101,8 +101,8 @@ func (n *entry) free() {
 	atomic.StorePointer(&n.typ, nil)
 }
 
-func (n *entry) isOccupied() bool {
-	return atomic.LoadPointer(&n.typ) != nil
+func (n *entry) isNil() bool {
+	return atomic.LoadPointer(&n.typ) == nil
 }
 
 // verifyEfaceLayout 检查 eface 结构体是否与运行时匹配。
@@ -140,6 +140,14 @@ type LockFree struct {
 	//   - 只有 Push 能将槽位从 nil 变为非 nil
 	//   - 只有 Pop 能将槽位从非 nil 变为 nil
 	data []entry
+}
+
+func (q *LockFree) Head() *atomic.Uint64 {
+	return &q.head
+}
+
+func (q *LockFree) Tail() *atomic.Uint64 {
+	return &q.tail
 }
 
 // New 创建并返回一个新的空的无锁队列。
@@ -186,20 +194,21 @@ func (q *LockFree) pushTail(val any) bool {
 		q.Init(initSize)
 	}
 	for {
-		tail := q.tail.Load()
 		head := q.head.Load()
+		tail := q.tail.Load()
 		if tail-head >= q.cap {
 			return false
 		}
-		if !q.tail.CompareAndSwap(tail, tail+1) {
+		slot := &q.data[tail&q.mask]
+		if !slot.isNil() {
+			runtime.Gosched() // 让出时间片，避免忙等待
 			continue
 		}
-		slot := &q.data[tail&q.mask]
-		for slot.isOccupied() {
-			runtime.Gosched()
+		if q.tail.CompareAndSwap(tail, tail+1) {
+			slot.store(val)
+			return true
 		}
-		slot.store(val)
-		return true
+		runtime.Gosched()
 	}
 }
 
@@ -218,17 +227,17 @@ func (q *LockFree) popHead() (any, bool) {
 			// 队列为空。
 			return nil, false
 		}
-		if !q.head.CompareAndSwap(head, head+1) {
+		slot := &q.data[head&q.mask]
+		if slot.isNil() {
+			runtime.Gosched() // 让出时间片，避免忙等待
 			continue
 		}
-		slot := &q.data[head&q.mask]
-		for !slot.isOccupied() {
-			runtime.Gosched() // 让出时间片，避免忙等待
+		if q.head.CompareAndSwap(head, head+1) {
+			val, ok := slot.load()
+			slot.free()
+			return val, ok
 		}
-		val, ok := slot.load()
-		slot.free()
-
-		return val, ok
+		runtime.Gosched()
 	}
 }
 
