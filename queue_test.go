@@ -24,18 +24,12 @@ const (
 	shortTestCap = 1 << 8
 )
 
-// testCap 根据测试模式返回合适的队列容量
-func testCap() int {
-	if testing.Short() {
-		return shortTestCap
-	}
-	return defaultTestCap
-}
-
 func perQueue(t *testing.T, f func(*testing.T, Interface)) {
 	var arrQueue = [...]Interface{
 		// &queue.DRQueue{},
 		&queue.LockFree{},
+		// &queue.SPSC{},
+		// &queue.LockQueue{},
 	}
 
 	for _, q := range arrQueue {
@@ -289,7 +283,7 @@ func TestConcurrentPushPop(t *testing.T) {
 // func TestQueueCounterWraparound(t *testing.T) {
 
 // 	var q queue.LockFree
-// 	q.Init(8)
+// 	q.Init(9)
 
 // 	start := ^uint64(0) - 2
 // 	q.Head().Store(start)
@@ -307,7 +301,7 @@ func TestConcurrentPushPop(t *testing.T) {
 // 		t.Fatalf("expected head (%d) > tail (%d) after counter wraparound", head, tail)
 // 	}
 // 	if got := q.Len(); got != q.Cap() {
-// 		t.Fatalf("Len() = %d after filling wrapped queue, want %d", got, q.Cap())
+// 		t.Fatalf("Len() = %d after filling wrapped queue, want %d,head=%d,tail=%d,tail-head=%d", got, q.Cap(), head, tail, tail-head)
 // 	}
 // 	if q.Push(q.Cap()) {
 // 		t.Fatal("Push succeeded on full wrapped queue")

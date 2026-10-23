@@ -6,10 +6,6 @@ import (
 
 // use for slice
 const (
-	bit  = 3
-	mod  = 1<<bit - 1
-	null = ^uintptr(0) // -1
-
 	/*
 		1<< 20~28
 		1048576		20
@@ -22,7 +18,7 @@ const (
 		134217728	27
 		268435456	28
 	*/
-	prevSize = 1 << 23 // queue previous Push
+	prevSize = 1 << 18 // queue previous Push
 )
 
 // Interface use in stack,queue testing

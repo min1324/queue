@@ -11,8 +11,6 @@ import (
 	"github.com/min1324/queue"
 )
 
-type DRQueue = queue.DRQueue
-
 // ============================================================
 // 基准测试框架
 // ============================================================
@@ -27,14 +25,15 @@ type bench struct {
 func benchMap(b *testing.B, bench bench) {
 	implementations := [...]Interface{
 		&queue.LockFree{},
-		&DRQueue{},
+		// &DRQueue{},
+		// &queue.SPSC{},
+		// &queue.LockQueue{},
 	}
 
 	for _, m := range implementations {
 		b.Run(fmt.Sprintf("%T", m), func(b *testing.B) {
 			// 创建新的队列实例，避免状态污染
 			m = reflect.New(reflect.TypeOf(m).Elem()).Interface().(Interface)
-			m.Init(prevSize)
 
 			if bench.setup != nil {
 				bench.setup(b, m)
@@ -58,7 +57,8 @@ func benchMap(b *testing.B, bench bench) {
 func BenchmarkPushFull(b *testing.B) {
 	benchMap(b, bench{
 		setup: func(_ *testing.B, m Interface) {
-			for i := 0; i < prevSize; i++ {
+			m.Init(64)
+			for i := 0; i < 64; i++ {
 				m.Push(i)
 			}
 		},
@@ -74,7 +74,9 @@ func BenchmarkPushFull(b *testing.B) {
 // BenchmarkPushEmpty 空队列场景下的 Push 性能
 func BenchmarkPushEmpty(b *testing.B) {
 	benchMap(b, bench{
-		setup: nil,
+		setup: func(_ *testing.B, m Interface) {
+			m.Init(prevSize)
+		},
 		perG: func(b *testing.B, pb *testing.PB, id int, m Interface) {
 			i := id * b.N
 			for ; pb.Next(); i++ {
@@ -91,7 +93,9 @@ func BenchmarkPushEmpty(b *testing.B) {
 // BenchmarkPopEmpty 空队列场景下的 Pop 性能
 func BenchmarkPopEmpty(b *testing.B) {
 	benchMap(b, bench{
-		setup: nil,
+		setup: func(_ *testing.B, m Interface) {
+			m.Init(0)
+		},
 		perG: func(b *testing.B, pb *testing.PB, id int, m Interface) {
 			for pb.Next() {
 				m.Pop()
@@ -104,6 +108,7 @@ func BenchmarkPopEmpty(b *testing.B) {
 func BenchmarkPopFull(b *testing.B) {
 	benchMap(b, bench{
 		setup: func(_ *testing.B, m Interface) {
+			m.Init(prevSize)
 			for i := 0; i < prevSize; i++ {
 				m.Push(i)
 			}
@@ -121,9 +126,30 @@ func BenchmarkPopFull(b *testing.B) {
 // ============================================================
 
 // BenchmarkBalance 均衡的 Push/Pop 操作性能
+func BenchmarkBalanceShortCap(b *testing.B) {
+	benchMap(b, bench{
+		setup: func(_ *testing.B, m Interface) {
+			m.Init(1 << 5)
+			// 预填充少量元素，确保 Pop 不会总是失败
+			for i := 0; i < 2; i++ {
+				m.Push(i)
+			}
+		},
+		perG: func(b *testing.B, pb *testing.PB, id int, m Interface) {
+			i := id * b.N
+			for ; pb.Next(); i++ {
+				m.Pop()
+				m.Push(i)
+			}
+		},
+	})
+}
+
+// BenchmarkBalance 均衡的 Push/Pop 操作性能
 func BenchmarkBalance(b *testing.B) {
 	benchMap(b, bench{
 		setup: func(_ *testing.B, m Interface) {
+			m.Init(prevSize)
 			// 预填充少量元素，确保 Pop 不会总是失败
 			for i := 0; i < 2; i++ {
 				m.Push(i)
@@ -142,7 +168,13 @@ func BenchmarkBalance(b *testing.B) {
 // BenchmarkPushHeavy Push 密集型操作性能（3:1 比例）
 func BenchmarkPushHeavy(b *testing.B) {
 	benchMap(b, bench{
-		setup: nil,
+		setup: func(_ *testing.B, m Interface) {
+			m.Init(prevSize)
+			// 预填充少量元素，确保 Pop 不会总是失败
+			for i := 0; i < 2; i++ {
+				m.Push(i)
+			}
+		},
 		perG: func(b *testing.B, pb *testing.PB, id int, m Interface) {
 			i := id * b.N
 			for ; pb.Next(); i++ {
@@ -159,6 +191,7 @@ func BenchmarkPushHeavy(b *testing.B) {
 func BenchmarkPopHeavy(b *testing.B) {
 	benchMap(b, bench{
 		setup: func(_ *testing.B, m Interface) {
+			m.Init(prevSize)
 			// 预填充大量元素
 			for i := 0; i < prevSize; i++ {
 				m.Push(i)
@@ -196,41 +229,9 @@ func BenchmarkPushCapSmall_LockFree(b *testing.B) {
 	})
 }
 
-// BenchmarkPushCapSmall_DRQueue 小容量队列 DRQueue Push 性能
-func BenchmarkPushCapSmall_DRQueue(b *testing.B) {
-	var q DRQueue
-	q.Init(64)
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		i := 0
-		for pb.Next() {
-			if !q.Push(i) {
-				q.Pop()
-			}
-			i++
-		}
-	})
-}
-
 // BenchmarkPushCapMedium_LockFree 中容量队列 LockFree Push 性能
 func BenchmarkPushCapMedium_LockFree(b *testing.B) {
 	var q queue.LockFree
-	q.Init(4096)
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		i := 0
-		for pb.Next() {
-			if !q.Push(i) {
-				q.Pop()
-			}
-			i++
-		}
-	})
-}
-
-// BenchmarkPushCapMedium_DRQueue 中容量队列 DRQueue Push 性能
-func BenchmarkPushCapMedium_DRQueue(b *testing.B) {
-	var q DRQueue
 	q.Init(4096)
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
@@ -260,22 +261,6 @@ func BenchmarkPushCapLarge_LockFree(b *testing.B) {
 	})
 }
 
-// BenchmarkPushCapLarge_DRQueue 大容量队列 DRQueue Push 性能
-func BenchmarkPushCapLarge_DRQueue(b *testing.B) {
-	var q DRQueue
-	q.Init(1 << 20)
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		i := 0
-		for pb.Next() {
-			if !q.Push(i) {
-				q.Pop()
-			}
-			i++
-		}
-	})
-}
-
 // ============================================================
 // 不同并发度基准测试
 // ============================================================
@@ -283,16 +268,6 @@ func BenchmarkPushCapLarge_DRQueue(b *testing.B) {
 // BenchmarkPush1Goroutine_LockFree 单协程 LockFree Push 性能
 func BenchmarkPush1Goroutine_LockFree(b *testing.B) {
 	var q queue.LockFree
-	q.Init(prevSize)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		q.Push(i)
-	}
-}
-
-// BenchmarkPush1Goroutine_DRQueue 单协程 DRQueue Push 性能
-func BenchmarkPush1Goroutine_DRQueue(b *testing.B) {
-	var q DRQueue
 	q.Init(prevSize)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -313,33 +288,9 @@ func BenchmarkPop1Goroutine_LockFree(b *testing.B) {
 	}
 }
 
-// BenchmarkPop1Goroutine_DRQueue 单协程 DRQueue Pop 性能
-func BenchmarkPop1Goroutine_DRQueue(b *testing.B) {
-	var q DRQueue
-	q.Init(prevSize)
-	for i := 0; i < prevSize; i++ {
-		q.Push(i)
-	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		q.Pop()
-	}
-}
-
 // BenchmarkPushPop1Goroutine_LockFree 单协程 LockFree 交替 Push/Pop 性能
 func BenchmarkPushPop1Goroutine_LockFree(b *testing.B) {
 	var q queue.LockFree
-	q.Init(prevSize)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		q.Push(i)
-		q.Pop()
-	}
-}
-
-// BenchmarkPushPop1Goroutine_DRQueue 单协程 DRQueue 交替 Push/Pop 性能
-func BenchmarkPushPop1Goroutine_DRQueue(b *testing.B) {
-	var q DRQueue
 	q.Init(prevSize)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -389,64 +340,9 @@ func BenchmarkProducerConsumer_LockFree(b *testing.B) {
 	wg.Wait()
 }
 
-// BenchmarkProducerConsumer_DRQueue 经典生产者-消费者模式 (DRQueue)
-func BenchmarkProducerConsumer_DRQueue(b *testing.B) {
-	var q DRQueue
-	q.Init(prevSize)
-
-	var wg sync.WaitGroup
-
-	b.ResetTimer()
-
-	// 生产者
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for i := 0; i < b.N; i++ {
-			for !q.Push(i) {
-				runtime.Gosched()
-			}
-		}
-	}()
-
-	// 消费者
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for i := 0; i < b.N; i++ {
-			for {
-				if _, ok := q.Pop(); ok {
-					break
-				}
-				runtime.Gosched()
-			}
-		}
-	}()
-
-	wg.Wait()
-}
-
 // BenchmarkMultiProducerConsumer_LockFree 多生产者多消费者模式 (LockFree)
 func BenchmarkMultiProducerConsumer_LockFree(b *testing.B) {
 	var q queue.LockFree
-	q.Init(prevSize)
-
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		i := 0
-		for pb.Next() {
-			for !q.Push(i) {
-				runtime.Gosched()
-			}
-			q.Pop()
-			i++
-		}
-	})
-}
-
-// BenchmarkMultiProducerConsumer_DRQueue 多生产者多消费者模式 (DRQueue)
-func BenchmarkMultiProducerConsumer_DRQueue(b *testing.B) {
-	var q DRQueue
 	q.Init(prevSize)
 
 	b.ResetTimer()
