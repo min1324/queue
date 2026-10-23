@@ -24,4 +24,6 @@ const (
 // Interface use in stack,queue testing
 type Interface interface {
 	queue.Queue
+	PopBetch(count int) ([]any, int)
+	PushBetch(val ...any) int
 }
