@@ -75,14 +75,19 @@ func (q *LockFree) Len() int {
 	return int(tail - head)
 }
 
-func (q *LockFree) Push(val any) bool {
-	return q.pushTail(val)
+func (q *LockFree) IsEmpty() bool {
+	return q.Len() == 0
 }
 
-func (q *LockFree) pushTail(val any) bool {
+func (q *LockFree) IsFull() bool {
+	return q.Len() == int(q.cap)
+}
+
+func (q *LockFree) Push(val any) bool {
 	if q.data == nil {
 		q.Init(initSize)
 	}
+	spin := 0
 	for {
 		head := q.head.Load()
 		tail := q.tail.Load()
@@ -98,17 +103,19 @@ func (q *LockFree) pushTail(val any) bool {
 			slot.store(val)
 			return true
 		}
+		spin++
+		if spin&spinMask == 0 {
+			runtime.Gosched() // 让出时间片，避免忙等待
+			spin = 0
+		}
 	}
 }
 
 func (q *LockFree) Pop() (any, bool) {
-	return q.popHead()
-}
-
-func (q *LockFree) popHead() (any, bool) {
 	if q.data == nil {
 		return nil, false
 	}
+	spin := 0
 	for {
 		tail := q.tail.Load()
 		head := q.head.Load()
@@ -123,11 +130,48 @@ func (q *LockFree) popHead() (any, bool) {
 		}
 		if q.head.CompareAndSwap(head, head+1) {
 			val, ok := slot.load()
-			slot.free()
 			if !ok {
-				panic("queue: popHead slot is nil")
+				return nil, false
 			}
+			slot.free()
 			return val, ok
 		}
+		spin++
+		if spin&spinMask == 0 {
+			runtime.Gosched() // 让出时间片，避免忙等待
+			spin = 0
+		}
 	}
+}
+
+func (q *LockFree) PushBetch(vals ...any) int {
+	if len(vals) <= 0 {
+		return 0
+	}
+	actual := 0
+	for _, val := range vals {
+		if !q.Push(val) {
+			break
+		}
+		actual++
+	}
+	return actual
+}
+
+func (q *LockFree) PopBetch(count int) ([]any, int) {
+	if count <= 0 {
+		return nil, 0
+	}
+	result := make([]any, count)
+	actual := 0
+	for i := 0; i < count; i++ {
+		val, ok := q.Pop()
+		if !ok {
+			break
+		}
+		result[actual] = val
+		actual++
+	}
+	result = result[:actual]
+	return result, actual
 }

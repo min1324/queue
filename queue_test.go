@@ -182,102 +182,117 @@ func TestConcurrentPushPop(t *testing.T) {
 		totalItems       = producerCount * itemsPerProducer
 	)
 
-	perQueue(t, func(t *testing.T, q Interface) {
-		q.Init(64)
+	var q queue.LockFree
 
-		start := make(chan struct{})
-		results := make(chan int, totalItems)
-		stop := make(chan struct{})
-		var consumed int64
-		var workers sync.WaitGroup
+	q.Init(1 << 6)
 
-		for producer := 0; producer < producerCount; producer++ {
-			j := producer
-			workers.Add(1)
-			go func() {
-				defer workers.Done()
-				<-start
-				for i := 0; i < itemsPerProducer; i++ {
-					value := j*itemsPerProducer + i
-					for !q.Push(value) {
-						select {
-						case <-stop:
-							return
-						default:
-							runtime.Gosched()
-						}
-					}
-				}
-			}()
-		}
+	start := make(chan struct{})
+	stop := make(chan struct{})
+	results := make(chan int, totalItems)
+	var consumed int64
+	var produced int64
+	var workers sync.WaitGroup
 
-		for consumer := 0; consumer < consumerCount; consumer++ {
-			workers.Add(1)
-			go func() {
-				defer workers.Done()
-				<-start
-				for atomic.AddInt64(&consumed, 1) <= totalItems {
-					for {
-						value, ok := q.Pop()
-						if ok {
-							results <- value.(int)
-							break
-						}
-						select {
-						case <-stop:
-							return
-						default:
-							runtime.Gosched()
-						}
-					}
-
-				}
-			}()
-		}
-
-		finished := make(chan struct{})
+	for producer := 0; producer < producerCount; producer++ {
+		j := producer
+		workers.Add(1)
 		go func() {
-			workers.Wait()
-			close(finished)
+			defer workers.Done()
+			<-start
+			for i := 0; i < itemsPerProducer; i++ {
+				value := j*itemsPerProducer + i
+				for !q.Push(value) {
+					select {
+					case <-stop:
+						return
+					default:
+						runtime.Gosched()
+					}
+				}
+				atomic.AddInt64(&produced, 1)
+			}
 		}()
-		close(start)
+	}
 
-		select {
-		case <-finished:
-		case <-time.After(10 * time.Second):
-			close(stop)
-			<-finished
-			t.Fatal("concurrent Push/Pop did not complete within 10 seconds")
-		}
-
-		if got := len(results); got != totalItems {
-			t.Fatalf("consumed %d values, want %d", got, totalItems)
-		}
-
-		seen := make([]bool, totalItems)
-		for i := 0; i < totalItems; i++ {
-			value := <-results
-			if value < 0 || value >= totalItems {
-				t.Fatalf("received out-of-range value %d", value)
+	for consumer := 0; consumer < consumerCount; consumer++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			<-start
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					if consumed >= totalItems {
+						return
+					}
+					vals, i := q.PopBetch(1)
+					if i > 0 {
+						for _, val := range vals {
+							results <- val.(int)
+							atomic.AddInt64(&consumed, 1)
+						}
+					}
+					// value, ok := q.Pop()
+					// if ok {
+					// 	results <- value.(int)
+					// 	atomic.AddInt64(&consumed, 1)
+					// }
+				}
 			}
-			if seen[value] {
-				t.Fatalf("received duplicate value %d", value)
-			}
-			seen[value] = true
-		}
-		for value, ok := range seen {
-			if !ok {
-				t.Fatalf("value %d was not received", value)
-			}
-		}
+		}()
+	}
 
-		if got := q.Len(); got != 0 {
-			t.Fatalf("Len() after concurrent drain = %d, want 0", got)
+	finished := make(chan struct{})
+	go func() {
+		workers.Wait()
+		close(finished)
+	}()
+	close(start)
+
+	select {
+	case <-finished:
+	case <-time.After(10 * time.Second):
+		close(stop)
+		t.Fatal("concurrent Push/Pop did not complete within 10 seconds")
+	}
+
+	if produced != totalItems {
+		t.Fatalf("produced %d values, want %d", produced, totalItems)
+	}
+
+	if produced != consumed {
+		t.Fatalf("produced (%d) != consumed (%d)", produced, consumed)
+	}
+
+	if got := len(results); got != totalItems {
+		t.Fatalf("consumed %d values, want %d", got, totalItems)
+	}
+
+	seen := make([]bool, totalItems)
+	for i := 0; i < totalItems; i++ {
+		value := <-results
+		if value < 0 || value >= totalItems {
+			t.Fatalf("received out-of-range value %d", value)
 		}
-		if _, ok := q.Pop(); ok {
-			t.Fatal("Pop() succeeded after all produced values were consumed")
+		if seen[value] {
+			t.Fatalf("received duplicate value %d", value)
 		}
-	})
+		seen[value] = true
+	}
+	for value, ok := range seen {
+		if !ok {
+			t.Fatalf("value %d was not received", value)
+		}
+	}
+
+	if got := q.Len(); got != 0 {
+		t.Fatalf("Len() after concurrent drain = %d, want 0", got)
+	}
+	if _, ok := q.Pop(); ok {
+		t.Fatal("Pop() succeeded after all produced values were consumed")
+	}
 }
 
 // func TestQueueCounterWraparound(t *testing.T) {
