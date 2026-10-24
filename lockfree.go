@@ -4,6 +4,12 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"unsafe"
+)
+
+const (
+	slpSpin = 1 << 4
+	maxSpin = slpSpin << 3
 )
 
 // LockFree 是一个无锁环形缓冲区队列的实现。
@@ -11,10 +17,13 @@ import (
 type LockFree struct {
 	once sync.Once
 
-	cap  uint64        // 队列容量
-	mask uint64        // 2^n-1 > cap
+	cap  uint64 // 队列容量
+	mask uint64 // 2^n-1 > cap
+
 	tail atomic.Uint64 // 指向下次写入数据的位置 (tail & mod)
+	_    [cacheLineSize - unsafe.Sizeof(atomic.Uint64{})]byte
 	head atomic.Uint64 // 指向下次读取数据的位置 (head & mod)
+	_    [cacheLineSize - unsafe.Sizeof(atomic.Uint64{})]byte
 
 	// 环形缓冲区存储
 	//
@@ -26,7 +35,7 @@ type LockFree struct {
 	// 状态转换规则：
 	//   - 只有 Push 能将槽位从 nil 变为非 nil
 	//   - 只有 Pop 能将槽位从非 nil 变为 nil
-	data []eface
+	data []paddedEface
 }
 
 // // ============= use for bond test =============
@@ -55,7 +64,7 @@ func (q *LockFree) Init(cap int) {
 			panic("queue: capacity overflow")
 		}
 		q.mask = upPow2(uint64(cap))
-		q.data = make([]eface, q.mask+1)
+		q.data = make([]paddedEface, q.mask+1)
 		q.cap = uint64(cap)
 		q.head.Store(0)
 		q.tail.Store(0)
@@ -87,7 +96,21 @@ func (q *LockFree) Push(val any) bool {
 	if q.data == nil {
 		q.Init(initSize)
 	}
-	spin := 0
+
+	// 快速尝试
+	head := q.head.Load()
+	tail := q.tail.Load()
+	if tail-head < q.cap {
+		slot := &q.data[tail&q.mask]
+		if slot.isNil() {
+			if q.tail.CompareAndSwap(tail, tail+1) {
+				slot.store(val)
+				return true
+			}
+		}
+	}
+
+	// 慢速尝试
 	for {
 		head := q.head.Load()
 		tail := q.tail.Load()
@@ -103,11 +126,6 @@ func (q *LockFree) Push(val any) bool {
 			slot.store(val)
 			return true
 		}
-		spin++
-		if spin&spinMask == 0 {
-			runtime.Gosched() // 让出时间片，避免忙等待
-			spin = 0
-		}
 	}
 }
 
@@ -115,7 +133,23 @@ func (q *LockFree) Pop() (any, bool) {
 	if q.data == nil {
 		return nil, false
 	}
-	spin := 0
+	// 快速尝试
+	tail := q.tail.Load()
+	head := q.head.Load()
+	if tail != head {
+		slot := &q.data[head&q.mask]
+		if !slot.isNil() {
+			if q.head.CompareAndSwap(head, head+1) {
+				val, ok := slot.load()
+				if ok {
+					slot.free()
+					return val, ok
+				}
+			}
+		}
+	}
+
+	// 慢速尝试
 	for {
 		tail := q.tail.Load()
 		head := q.head.Load()
@@ -125,6 +159,7 @@ func (q *LockFree) Pop() (any, bool) {
 		}
 		slot := &q.data[head&q.mask]
 		if slot.isNil() {
+
 			runtime.Gosched() // 让出时间片，避免忙等待
 			continue
 		}
@@ -136,11 +171,6 @@ func (q *LockFree) Pop() (any, bool) {
 			slot.free()
 			return val, ok
 		}
-		spin++
-		if spin&spinMask == 0 {
-			runtime.Gosched() // 让出时间片，避免忙等待
-			spin = 0
-		}
 	}
 }
 
@@ -148,15 +178,54 @@ func (q *LockFree) PushBetch(vals ...any) int {
 	if len(vals) <= 0 {
 		return 0
 	}
-	actual := 0
-	for _, val := range vals {
-		if !q.Push(val) {
+	if q.data == nil {
+		q.Init(initSize)
+	}
+	tail := q.tail.Load()
+	head := q.head.Load()
+	available := int(q.cap - (tail - head))
+	if available < 1 {
+		return 0
+	}
+	if available > len(vals) {
+		available = len(vals)
+	}
+
+	// 预检测所有槽位是否可用
+	mask := q.mask
+	for i := 0; i < available; i++ {
+		if !q.data[(tail+uint64(i))&mask].isNil() {
+			available = i
 			break
 		}
-		actual++
 	}
-	return actual
+
+	// 尝试更新
+	newTail := tail + uint64(available)
+	if !q.tail.CompareAndSwap(tail, newTail) {
+		return 0
+	}
+
+	// 批量写入
+	for i := 0; i < available; i++ {
+		q.data[(tail+uint64(i))&mask].store(vals[i])
+	}
+	return available
 }
+
+// func (q *LockFree) PushBetch(vals ...any) int {
+// 	if len(vals) <= 0 {
+// 		return 0
+// 	}
+// 	actual := 0
+// 	for _, val := range vals {
+// 		if !q.Push(val) {
+// 			break
+// 		}
+// 		actual++
+// 	}
+// 	return actual
+// }
 
 func (q *LockFree) PopBetch(count int) ([]any, int) {
 	if count <= 0 {

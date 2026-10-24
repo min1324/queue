@@ -9,6 +9,10 @@ func init() {
 	verifyEfaceLayout()
 }
 
+const (
+	cacheLineSize = 64
+)
+
 type nilQueueNil struct{}
 
 var queueNilVal any = (*nilQueueNil)(nil)
@@ -27,6 +31,11 @@ func verifyEfaceLayout() {
 	if nilEp.typ != nil || nilEp.data != nil {
 		panic("queue: eface layout does not match runtime nil interface layout")
 	}
+}
+
+type paddedEface struct {
+	eface
+	_ [cacheLineSize - unsafe.Sizeof(eface{})]byte
 }
 
 // eface 映射了空接口的运行时内部表示。
@@ -66,3 +75,8 @@ func (n *eface) free() {
 func (n *eface) isNil() bool {
 	return atomic.LoadPointer(&n.typ) == nil
 }
+
+// type paddedUint64 struct {
+// 	atomic.Uint64
+// 	_ [cacheLineSize - unsafe.Sizeof(atomic.Uint64{})]byte
+// }
