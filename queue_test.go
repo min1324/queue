@@ -233,7 +233,7 @@ func tConcurrentPushPop(t *testing.T, q Interface) {
 					if consumed >= totalItems {
 						return
 					}
-					vals, i := q.PopBetch(1)
+					vals, i := q.BatchPop(1)
 					if i > 0 {
 						for _, val := range vals {
 							results <- val.(int)
@@ -316,13 +316,13 @@ func tPushPopBatch(t *testing.T, q Interface) {
 
 	// 测试1: 基本批量推送和弹出
 	testData := []any{1, 2, 3, 4, 5}
-	pushed := q.PushBetch(testData...)
+	pushed := q.BatchPush(testData...)
 	if pushed != len(testData) {
 		t.Errorf("测试1: Expected to push %d items, but pushed %d", len(testData), pushed)
 	}
 
 	// 批量弹出
-	popped, actual := q.PopBetch(len(testData))
+	popped, actual := q.BatchPop(len(testData))
 	if actual != len(testData) {
 		t.Errorf("测试1: Expected to pop %d items, but popped %d", len(testData), actual)
 	}
@@ -335,14 +335,14 @@ func tPushPopBatch(t *testing.T, q Interface) {
 	}
 
 	// 测试2: 部分批量操作
-	q.PushBetch(1, 2, 3, 4, 5)
-	popped, actual = q.PopBetch(3)
+	q.BatchPush(1, 2, 3, 4, 5)
+	popped, actual = q.BatchPop(3)
 	if actual != 3 {
 		t.Errorf("测试2: Expected to pop 3 items, but popped %d", actual)
 	}
 
 	// 验证队列中剩余元素
-	remaining, _ := q.PopBetch(10)
+	remaining, _ := q.BatchPop(10)
 	if len(remaining) != 2 {
 		t.Errorf("测试2: Expected 2 remaining items, got %d", len(remaining))
 	}
@@ -353,20 +353,20 @@ func tPushPopBatch(t *testing.T, q Interface) {
 		fillData[i] = i
 	}
 
-	pushed = q.PushBetch(fillData...)
+	pushed = q.BatchPush(fillData...)
 	if pushed != queueSize {
 		t.Errorf("测试3: Expected to push %d items, but pushed %d", queueSize, pushed)
 	}
 
 	// 测试4: 队列已满时的批量操作
 	overflow := []any{100, 101, 102}
-	pushed = q.PushBetch(overflow...)
+	pushed = q.BatchPush(overflow...)
 	if pushed != 0 {
 		t.Errorf("测试4: Expected to push 0 items (queue full), but pushed %d", pushed)
 	}
 
 	// 测试5: 从满队列批量弹出
-	popped, actual = q.PopBetch(queueSize >> 2)
+	popped, actual = q.BatchPop(queueSize >> 2)
 	if actual != queueSize>>2 {
 		t.Errorf("测试5: Expected to pop %d items, but popped %d", queueSize/2, actual)
 	}
@@ -380,17 +380,17 @@ func tPushPopBatch(t *testing.T, q Interface) {
 	}
 
 	// 测试6: 在部分填充的队列中批量操作
-	pushed = q.PushBetch(testData6...)
+	pushed = q.BatchPush(testData6...)
 	if pushed != len(testData6) {
 		t.Errorf("测试6: Expected to push %d items, but pushed %d", len(testData6), pushed)
 	}
 
-	_, actual = q.PopBetch(oldlen)
+	_, actual = q.BatchPop(oldlen)
 	if actual != oldlen {
 		t.Errorf("测试65: Expected to pop %d items, but popped %d", oldlen, actual)
 	}
 
-	popped, actual = q.PopBetch(len(testData6))
+	popped, actual = q.BatchPop(len(testData6))
 	if len(popped) != len(testData6) || actual != len(testData6) {
 		t.Errorf("测试6: Expected to pop %d items, but popped %d, actual %d", len(testData6), len(popped), actual)
 	}
@@ -438,7 +438,7 @@ func pushPopBatchConcurrent(t *testing.T, q Interface) {
 				for k := 0; k < batchSize; k++ {
 					vals[k] = id*numOperations + j*batchSize + k
 				}
-				for q.PushBetch(vals...) == 0 {
+				for q.BatchPush(vals...) == 0 {
 					runtime.Gosched()
 				}
 			}
@@ -454,7 +454,7 @@ func pushPopBatchConcurrent(t *testing.T, q Interface) {
 				case <-stop:
 					return
 				default:
-					res, i := q.PopBetch(numOperations)
+					res, i := q.BatchPop(numOperations)
 					if i > 0 {
 						for _, v := range res {
 							seenmap.Store(v, true)
@@ -483,7 +483,7 @@ func pushPopBatchConcurrent(t *testing.T, q Interface) {
 	popg.Wait()
 
 	// 验证队列最终为空
-	got, remaining := q.PopBetch(queueSize)
+	got, remaining := q.BatchPop(queueSize)
 	if remaining != 0 || len(got) != 0 {
 		t.Errorf("Expected queue to be empty, but has %d,%d items", len(got), remaining)
 	}

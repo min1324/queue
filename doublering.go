@@ -105,13 +105,13 @@ func (q *DoubleRing) Pop() (val any, ok bool) {
 	return val, true
 }
 
-func (q *DoubleRing) PushBetch(val ...any) int {
-	i, _ := q.pushBetch(val...)
+func (q *DoubleRing) BatchPush(val ...any) int {
+	i, _ := q.betchPush(val...)
 	return i
 }
 
 // 返回已经push的个数，返回队列是否满
-func (q *DoubleRing) pushBetch(val ...any) (int, bool) {
+func (q *DoubleRing) betchPush(val ...any) (int, bool) {
 	if len(val) == 0 {
 		return 0, true
 	}
@@ -140,7 +140,7 @@ func (q *DoubleRing) pushBetch(val ...any) (int, bool) {
 	return availbale, true
 }
 
-func (q *DoubleRing) PopBetch(count int) ([]any, int) {
+func (q *DoubleRing) BatchPop(count int) ([]any, int) {
 	if count < 1 {
 		return nil, 0
 	}

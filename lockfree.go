@@ -224,7 +224,7 @@ func (q *LockFree) Pop() (any, bool) {
 
 // PushBetch 是一个无锁队列的批量推入方法
 // 它接受可变数量的参数 vals，并成功推入队列的元素数量
-func (q *LockFree) PushBetch(vals ...any) int {
+func (q *LockFree) BatchPush(vals ...any) int {
 	if len(vals) < 1 {
 		return 0
 	}
@@ -272,10 +272,10 @@ func (q *LockFree) PushBetch(vals ...any) int {
 	return available
 }
 
-// PopBetch 是一个从无锁队列中批量弹出元素的方法
+// BatchPop 是一个从无锁队列中批量弹出元素的方法
 // 它接收一个整数参数 count，表示希望弹出的元素数量
 // 返回一个包含最多 count 个元素的切片和实际弹出的元素数量
-func (q *LockFree) PopBetch(count int) ([]any, int) {
+func (q *LockFree) BatchPop(count int) ([]any, int) {
 	if count < 1 {
 		return nil, 0
 	}
