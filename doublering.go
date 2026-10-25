@@ -106,12 +106,12 @@ func (q *DoubleRing) Pop() (val any, ok bool) {
 }
 
 func (q *DoubleRing) BatchPush(val ...any) int {
-	i, _ := q.betchPush(val...)
+	i, _ := q.batchPush(val...)
 	return i
 }
 
 // 返回已经push的个数，返回队列是否满
-func (q *DoubleRing) betchPush(val ...any) (int, bool) {
+func (q *DoubleRing) batchPush(val ...any) (int, bool) {
 	if len(val) == 0 {
 		return 0, true
 	}
@@ -176,5 +176,38 @@ func (q *DoubleRing) BatchPop(count int) ([]any, int) {
 	}
 	q.head.Add(uint64(actual))
 	result = result[:actual]
+	return result, actual
+}
+
+func (q *DoubleRing) Clean() ([]any, int) {
+	if q.IsEmpty() {
+		return nil, 0
+	}
+	q.inMux.Lock()
+	defer q.inMux.Unlock()
+	q.outMux.Lock()
+	defer q.outMux.Unlock()
+	tail := q.tail.Load()
+	head := q.head.Load()
+	mask := q.mask
+
+	// tail == head+cap 表示队列已满，head == tail 表示队列为空。
+	q.head.Store(tail)
+
+	var result = make([]any, q.cap)
+	actual := 0
+	for i := head; i < tail; i++ {
+		slot := &q.data[i&mask]
+		v, ok := slot.load()
+		if !ok {
+			continue
+		}
+		result[i-head] = v
+		actual++
+		slot.free()
+	}
+	if actual > 0 {
+		result = result[:actual]
+	}
 	return result, actual
 }

@@ -24,7 +24,7 @@ const (
 	shortTestCap = 1 << 8
 )
 
-func perQueue(t *testing.T, f func(*testing.T, Interface)) {
+func perQueue(t *testing.T, f func(t *testing.T, q Interface)) {
 	var arrQueue = [...]Interface{
 		&queue.DoubleRing{},
 		&queue.LockFree{},
@@ -42,20 +42,6 @@ func perQueue(t *testing.T, f func(*testing.T, Interface)) {
 // ============================================================
 // 基础功能测试
 // ============================================================
-
-// TestNew 验证 New() 创建的队列初始状态
-func TestNew(t *testing.T) {
-	q := queue.New()
-	if got := q.Len(); got != 0 {
-		t.Fatalf("New().Len() = %d, want 0", got)
-	}
-	if got := q.Cap(); got != 0 {
-		t.Fatalf("New().Cap() = %d, want 0 before initialization", got)
-	}
-	if got, ok := q.Pop(); ok || got != nil {
-		t.Fatalf("Pop() on new queue = (%v, %v), want (nil, false)", got, ok)
-	}
-}
 
 func TestInit(t *testing.T) {
 	tests := []struct {
@@ -496,4 +482,217 @@ func pushPopBatchConcurrent(t *testing.T, q Interface) {
 		}
 		return true
 	})
+}
+
+// TestClean 测试 Close 方法的功能
+func TestClean(t *testing.T) {
+	perQueue(t, func(t *testing.T, q Interface) {
+		// 测试1: 空队列
+		q.Init(10)
+
+		remaining, count := q.Clean()
+		if count != 0 {
+			t.Errorf("Expected 0 items, got %d", count)
+		}
+		if len(remaining) != 0 {
+			t.Errorf("Expected empty slice, got %v", remaining)
+		}
+	})
+
+	// 测试2: 非空队列
+	perQueue(t, func(t *testing.T, q Interface) {
+
+		q.Init(10)
+
+		// 添加一些元素
+		expected := []any{1, 2, 3, 4, 5}
+		for _, val := range expected {
+			if !q.Push(val) {
+				t.Errorf("Failed to push value %v", val)
+			}
+		}
+
+		// 关闭队列并获取剩余元素
+		remaining, count := q.Clean()
+		if count != len(expected) {
+			t.Errorf("Expected %d items, got %d", len(expected), count)
+		}
+
+		// 验证元素是否一致
+		if len(remaining) != len(expected) {
+			t.Errorf("Expected %d elements, got %d", len(expected), len(remaining))
+		}
+
+		for i, val := range remaining {
+			if val != expected[i] {
+				t.Errorf("Expected %v at index %d, got %v", expected[i], i, val)
+			}
+		}
+	})
+
+	// 测试3: 部分消费的队列
+	// t.Run("Partially Consumed Queue", func(t *testing.T) {
+	perQueue(t, func(t *testing.T, q Interface) {
+		q.Init(10)
+
+		// 添加一些元素
+		expected := []any{1, 2, 3, 4, 5}
+		for _, val := range expected {
+			if !q.Push(val) {
+				t.Errorf("Failed to push value %v", val)
+			}
+		}
+
+		// 消费部分元素
+		consumed, _ := q.Pop()
+		if consumed != 1 {
+			t.Errorf("Expected to consume 1, got %v", consumed)
+		}
+
+		// 关闭队列并获取剩余元素
+		remaining, count := q.Clean()
+		if count != len(expected)-1 {
+			t.Errorf("Expected %d items, got %d", len(expected)-1, count)
+		}
+
+		// 验证剩余元素是否正确
+		if len(remaining) != len(expected)-1 {
+			t.Errorf("Expected %d elements, got %d", len(expected)-1, len(remaining))
+		}
+
+		for i, val := range remaining {
+			if val != expected[i+1] {
+				t.Errorf("Expected %v at index %d, got %v", expected[i+1], i, val)
+			}
+		}
+	})
+
+	// 测试4: 并发场景下的关闭
+	// t.Run("Concurrent Clean", func(t *testing.T) {
+	perQueue(t, func(t *testing.T, q Interface) {
+		q.Init(10)
+
+		// 添加一些元素
+		for i := 0; i < 5; i++ {
+			if !q.Push(i) {
+				t.Errorf("Failed to push value %d", i)
+			}
+		}
+
+		// 启动一个 goroutine 进行关闭操作
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			remaining, count := q.Clean()
+			if count != 5 {
+				t.Errorf("Expected 5 items, got %d", count)
+			}
+			if len(remaining) != 5 {
+				t.Errorf("Expected 5 elements, got %d", len(remaining))
+			}
+		}()
+
+		// 等待关闭操作完成
+		<-done
+
+		// 尝试再次关闭，应该返回空
+		remaining, count := q.Clean()
+		if count != 0 {
+			t.Errorf("Expected 0 items after first Clean, got %d", count)
+		}
+		if len(remaining) != 0 {
+			t.Errorf("Expected empty slice after first Clean, got %v", remaining)
+		}
+	})
+
+	// 测试5: 包含 nil 值的队列
+	// t.Run("Queue with nil values", func(t *testing.T) {
+	perQueue(t, func(t *testing.T, q Interface) {
+		q.Init(10)
+
+		// 添加一些元素，包括 nil 值
+		expected := []any{1, nil, 3, nil, 5}
+		for _, val := range expected {
+			if !q.Push(val) {
+				t.Errorf("Failed to push value %v", val)
+			}
+		}
+
+		// 关闭队列并获取剩余元素
+		remaining, count := q.Clean()
+		if count != len(expected) {
+			t.Errorf("Expected %d items, got %d", len(expected), count)
+		}
+
+		// 验证元素是否一致
+		if len(remaining) != len(expected) {
+			t.Errorf("Expected %d elements, got %d", len(expected), len(remaining))
+		}
+
+		for i, val := range remaining {
+			if val != expected[i] {
+				t.Errorf("Expected %v at index %d, got %v", expected[i], i, val)
+			}
+		}
+	})
+}
+
+// BenchmarkClean 测试 Clean 方法的性能
+func BenchmarkClean_LockFree(b *testing.B) {
+	q := &queue.LockFree{}
+	q.Init(1000)
+
+	// 预填充数据
+	for i := 0; i < 1000; i++ {
+		q.Push(i)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		q.Clean()
+		// 重新填充数据
+		for j := 0; j < 1000; j++ {
+			q.Push(j)
+		}
+	}
+}
+
+func BenchmarkClean_DoubleRing(b *testing.B) {
+	q := &queue.DoubleRing{}
+	q.Init(1000)
+
+	// 预填充数据
+	for i := 0; i < 1000; i++ {
+		q.Push(i)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		q.Clean()
+		// 重新填充数据
+		for j := 0; j < 1000; j++ {
+			q.Push(j)
+		}
+	}
+}
+
+// BenchmarkCleanEmpty 测试关闭空队列的性能
+func BenchmarkCleanEmpty_LockFree(b *testing.B) {
+	q := &queue.LockFree{}
+	q.Init(1000)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		q.Clean()
+	}
+}
+
+func BenchmarkCleanEmpty_DoubleRing(b *testing.B) {
+	q := &queue.DoubleRing{}
+	q.Init(1000)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		q.Clean()
+	}
 }

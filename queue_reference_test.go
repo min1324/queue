@@ -26,4 +26,5 @@ type Interface interface {
 	queue.Queue
 	BatchPop(count int) ([]any, int)
 	BatchPush(val ...any) int
+	Clean() ([]any, int)
 }

@@ -236,7 +236,7 @@ func (q *LockFree) BatchPush(vals ...any) int {
 	// 计算队列中可用的槽位数
 	available := int(q.cap - (tail - head))
 	if available < 1 {
-		return 0
+		return 0 // 队列已满。
 	}
 	if available > len(vals) {
 		available = len(vals)
@@ -279,8 +279,12 @@ func (q *LockFree) BatchPop(count int) ([]any, int) {
 	if count < 1 {
 		return nil, 0
 	}
+	tail := q.tail.Load()
+	head := q.head.Load()
+	if head == tail {
+		return nil, 0 // 队列为空。
+	}
 	result := make([]any, count)
-	// actual 用于记录实际弹出的元素数量
 	actual := 0
 	for i := 0; i < count; i++ {
 		val, ok := q.Pop()
@@ -293,6 +297,10 @@ func (q *LockFree) BatchPop(count int) ([]any, int) {
 	// 调整结果切片大小，只包含实际获取的元素
 	result = result[:actual]
 	return result, actual
+}
+
+func (q *LockFree) Clean() ([]any, int) {
+	return q.BatchPop(int(q.cap))
 }
 
 // func (q *LockFree) PopBetch1(count int) ([]any, int) {
