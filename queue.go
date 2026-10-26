@@ -1,15 +1,12 @@
 package queue
 
 const (
-	// initSize 是未提供容量时的默认队列容量。
+	// DefaultCap 是未提供容量时的默认队列容量。
 	// 选择2的幂次是为了高效的取模运算。
-	initSize = 1 << 8 // 256
+	DefaultCap = 1 << 8 // 256
 
-	spinMask = 1<<4 - 1 // 自旋次数，用于避免忙等待
-
-	// 最大队列容量。
-	maxUint64 = 1 << 30
-	// maxUint64 = ^uint64(0) >> 2
+	// MaxCap 是队列的最大容量。
+	MaxCap = 1<<30 - 1 // ^uint64(0) >> 2
 )
 
 // Queue 定义了带有容量管理的无锁队列接口。

@@ -18,7 +18,15 @@ const (
 		134217728	27
 		268435456	28
 	*/
-	prevSize = 1 << 18 // queue previous Push
+	prevCap = 1 << 22 // queue previous Push
+
+	// stressTestCap 压力测试队列容量
+	stressTestCap = 1 << 20
+	// shortTestCap 短测试队列容量
+	shortTestCap = 1 << 8
+
+	// defaultTestCap 测试默认队列容量
+	defaultTestCap = 1 << 8
 )
 
 // Interface use in stack,queue testing

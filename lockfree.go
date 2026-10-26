@@ -9,6 +9,8 @@ import (
 
 const (
 	cacheLineSize = 64
+	defaultCap    = DefaultCap // LockFree 默认容量
+	maxCap        = MaxCap     // LockFree 最大容量
 )
 
 // ------------------------ eface ------------------------
@@ -69,7 +71,7 @@ func kfifo(u uint64) uint64 {
 type LockFree struct {
 	once sync.Once
 
-	cap  uint64 // 队列容量
+	cap  uint64 // 队列实际容量
 	mask uint64 // 2^n-1 > cap
 
 	tail atomic.Uint64 // 指向下次写入数据的位置 (tail & mod)
@@ -99,16 +101,17 @@ func New() Queue {
 func (q *LockFree) Init(cap int) {
 	q.once.Do(func() {
 		if cap < 1 {
-			cap = initSize
+			cap = defaultCap
 		}
-		if uint64(cap) > maxUint64 {
+		if uint64(cap) > maxCap {
 			panic("queue: capacity overflow")
 		}
 		q.mask = kfifo(uint64(cap))
-		q.data = make([]eface, q.mask+1)
 		q.cap = uint64(cap)
 		q.head.Store(0)
 		q.tail.Store(0)
+
+		q.data = make([]eface, q.mask+1)
 	})
 }
 
@@ -143,7 +146,7 @@ func (q *LockFree) IsFull() bool {
 //	bool - 成功入队返回true，队列已满返回false
 func (q *LockFree) Push(val any) bool {
 	if q.data == nil {
-		q.Init(initSize)
+		q.Init(DefaultCap)
 	}
 	// 处理nil值，使用特殊值代替
 	if val == nil {
@@ -229,7 +232,7 @@ func (q *LockFree) BatchPush(vals ...any) int {
 		return 0
 	}
 	if q.data == nil {
-		q.Init(initSize)
+		q.Init(DefaultCap)
 	}
 	tail := q.tail.Load()
 	head := q.head.Load()

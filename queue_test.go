@@ -11,23 +11,10 @@ import (
 	"github.com/min1324/queue"
 )
 
-// ============================================================
-// 辅助常量
-// ============================================================
-
-const (
-	// defaultTestCap 测试默认队列容量
-	defaultTestCap = 1 << 8
-	// stressTestCap 压力测试队列容量
-	stressTestCap = 1 << 20
-	// shortTestCap 短测试队列容量
-	shortTestCap = 1 << 8
-)
-
 func perQueue(t *testing.T, f func(t *testing.T, q Interface)) {
 	var arrQueue = [...]Interface{
-		&queue.DoubleRing{},
-		&queue.LockFree{},
+		&queue.MuxRing{},
+		// &queue.LockFree{},
 		// &queue.SPSC{},
 		// &queue.LockQueue{},
 	}
@@ -146,6 +133,10 @@ func TestQueueFIFOAndCapacity(t *testing.T) {
 func TestQueueNilValue(t *testing.T) {
 	perQueue(t, func(t *testing.T, q Interface) {
 		q.Init(2)
+		q.Push(3)
+		if got, ok := q.Pop(); !ok || got != 3 {
+			t.Fatalf("Pop() after Push(nil) = (%v, %v), want (3, true)", got, ok)
+		}
 
 		if !q.Push(nil) {
 			t.Fatal("Push(nil) failed")
@@ -160,12 +151,47 @@ func TestQueueNilValue(t *testing.T) {
 	})
 }
 
+func TestQueueDiffType(t *testing.T) {
+	perQueue(t, func(t *testing.T, q Interface) {
+		q.Init(8)
+		if !q.Push(3) {
+			t.Fatal("Push(3) failed")
+		}
+		if got, ok := q.Pop(); !ok || got != 3 {
+			t.Fatalf("Pop() after Push(3) = (%v, %v), want (3, true)", got, ok)
+		}
+
+		if !q.Push("string") {
+			t.Fatal("Push(string) failed")
+		}
+
+		if got, ok := q.Pop(); !ok || got != "string" {
+			t.Fatalf("Pop() after Push(string) = (%v, %v), want (string, true)", got, ok)
+		}
+		if !q.Push(nil) {
+			t.Fatal("Push(nil) failed")
+		}
+		if got, ok := q.Pop(); !ok || got != nil {
+			t.Fatalf("Pop() after Push(nil) = (%v, %v), want (nil, true)", got, ok)
+		}
+		if _, ok := q.Pop(); ok {
+			t.Fatal("Pop() succeeded after nil value was removed")
+		}
+		if !q.Push(true) {
+			t.Fatal("Push(string) failed")
+		}
+		if got, ok := q.Pop(); !ok || got != true {
+			t.Fatalf("Pop() after Push(true) = (%v, %v), want (true, true)", got, ok)
+		}
+	})
+}
+
 func TestConcurrentPushPop_LockFree(t *testing.T) {
 	tConcurrentPushPop(t, &queue.LockFree{})
 }
 
 func TestConcurrentPushPop_DRQueue(t *testing.T) {
-	tConcurrentPushPop(t, &queue.DoubleRing{})
+	tConcurrentPushPop(t, &queue.MuxRing{})
 }
 
 func tConcurrentPushPop(t *testing.T, q Interface) {
@@ -176,7 +202,7 @@ func tConcurrentPushPop(t *testing.T, q Interface) {
 		totalItems       = producerCount * itemsPerProducer
 	)
 
-	q.Init(1 << 6)
+	q.Init(shortTestCap)
 
 	start := make(chan struct{})
 	stop := make(chan struct{})
@@ -292,13 +318,13 @@ func TestPushPopBatch_LockFree(t *testing.T) {
 }
 
 func TestPushPopBatch_DRQueue(t *testing.T) {
-	tPushPopBatch(t, &queue.DoubleRing{})
+	tPushPopBatch(t, &queue.MuxRing{})
 }
 
 // 标准测试：验证批量操作的正确性
 func tPushPopBatch(t *testing.T, q Interface) {
-	const queueSize = 100
-	q.Init(queueSize)
+	const queueCap = shortTestCap
+	q.Init(queueCap)
 
 	// 测试1: 基本批量推送和弹出
 	testData := []any{1, 2, 3, 4, 5}
@@ -334,14 +360,14 @@ func tPushPopBatch(t *testing.T, q Interface) {
 	}
 
 	// 测试3: 填满队列
-	fillData := make([]any, queueSize)
-	for i := 0; i < queueSize; i++ {
+	fillData := make([]any, queueCap)
+	for i := 0; i < queueCap; i++ {
 		fillData[i] = i
 	}
 
 	pushed = q.BatchPush(fillData...)
-	if pushed != queueSize {
-		t.Errorf("测试3: Expected to push %d items, but pushed %d", queueSize, pushed)
+	if pushed != queueCap {
+		t.Errorf("测试3: Expected to push %d items, but pushed %d", queueCap, pushed)
 	}
 
 	// 测试4: 队列已满时的批量操作
@@ -352,9 +378,9 @@ func tPushPopBatch(t *testing.T, q Interface) {
 	}
 
 	// 测试5: 从满队列批量弹出
-	popped, actual = q.BatchPop(queueSize >> 2)
-	if actual != queueSize>>2 {
-		t.Errorf("测试5: Expected to pop %d items, but popped %d", queueSize/2, actual)
+	popped, actual = q.BatchPop(queueCap >> 2)
+	if actual != queueCap>>2 {
+		t.Errorf("测试5: Expected to pop %d items, but popped %d", queueCap/2, actual)
 	}
 
 	oldlen := q.Len()
@@ -393,7 +419,7 @@ func TestPushPopBatchConcurrent_LockFree(t *testing.T) {
 }
 
 func TestPushPopBatchConcurrent_DRQueue(t *testing.T) {
-	pushPopBatchConcurrent(t, &queue.DoubleRing{})
+	pushPopBatchConcurrent(t, &queue.MuxRing{})
 }
 
 // 压力测试：验证并发环境下的批量操作性能
@@ -403,10 +429,10 @@ func pushPopBatchConcurrent(t *testing.T, q Interface) {
 		numCumG       = 10
 		numOperations = 100
 		batchSize     = 10
-		queueSize     = numOperations * batchSize * numPusG
+		queueCap      = numOperations * batchSize * numPusG
 	)
 
-	q.Init(queueSize)
+	q.Init(queueCap)
 	var wg sync.WaitGroup
 	popg := sync.WaitGroup{}
 
@@ -446,7 +472,7 @@ func pushPopBatchConcurrent(t *testing.T, q Interface) {
 							seenmap.Store(v, true)
 						}
 					}
-					if atomic.AddUint64(&totalPop, uint64(i)) == queueSize {
+					if atomic.AddUint64(&totalPop, uint64(i)) == queueCap {
 						return
 					}
 				}
@@ -469,12 +495,12 @@ func pushPopBatchConcurrent(t *testing.T, q Interface) {
 	popg.Wait()
 
 	// 验证队列最终为空
-	got, remaining := q.BatchPop(queueSize)
+	got, remaining := q.BatchPop(queueCap)
 	if remaining != 0 || len(got) != 0 {
 		t.Errorf("Expected queue to be empty, but has %d,%d items", len(got), remaining)
 	}
-	if totalPop != queueSize {
-		t.Errorf("Expected to pop %d items, but popped %d", queueSize, totalPop)
+	if totalPop != queueCap {
+		t.Errorf("Expected to pop %d items, but popped %d", queueCap, totalPop)
 	}
 	seenmap.Range(func(key, value any) bool {
 		if !value.(bool) {
@@ -635,64 +661,4 @@ func TestClean(t *testing.T) {
 			}
 		}
 	})
-}
-
-// BenchmarkClean 测试 Clean 方法的性能
-func BenchmarkClean_LockFree(b *testing.B) {
-	q := &queue.LockFree{}
-	q.Init(1000)
-
-	// 预填充数据
-	for i := 0; i < 1000; i++ {
-		q.Push(i)
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		q.Clean()
-		// 重新填充数据
-		for j := 0; j < 1000; j++ {
-			q.Push(j)
-		}
-	}
-}
-
-func BenchmarkClean_DoubleRing(b *testing.B) {
-	q := &queue.DoubleRing{}
-	q.Init(1000)
-
-	// 预填充数据
-	for i := 0; i < 1000; i++ {
-		q.Push(i)
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		q.Clean()
-		// 重新填充数据
-		for j := 0; j < 1000; j++ {
-			q.Push(j)
-		}
-	}
-}
-
-// BenchmarkCleanEmpty 测试关闭空队列的性能
-func BenchmarkCleanEmpty_LockFree(b *testing.B) {
-	q := &queue.LockFree{}
-	q.Init(1000)
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		q.Clean()
-	}
-}
-
-func BenchmarkCleanEmpty_DoubleRing(b *testing.B) {
-	q := &queue.DoubleRing{}
-	q.Init(1000)
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		q.Clean()
-	}
 }

@@ -6,7 +6,7 @@ import (
 )
 
 // 双锁环形队列，可以并发Push和Pop
-type DoubleRing struct {
+type MuxRing struct {
 	once sync.Once
 
 	inMux  sync.Mutex // 控制Push操作
@@ -26,23 +26,23 @@ type DoubleRing struct {
 	data []entry
 }
 
-func (q *DoubleRing) Init(cap int) {
+func (q *MuxRing) Init(cap int) {
 	q.once.Do(func() {
 		if cap < 1 {
-			cap = initSize
+			cap = DefaultCap
 		}
-		if uint64(cap) > maxUint64 {
+		if uint64(cap) > MaxCap {
 			panic("queue: capacity overflow")
 		}
 		q.mask = upPow2(uint64(cap))
-		q.data = make([]entry, q.mask+1)
 		q.cap = uint64(cap)
 		q.head.Store(0)
 		q.tail.Store(0)
+		q.data = make([]entry, q.mask+1)
 	})
 }
 
-func (q *DoubleRing) Cap() int {
+func (q *MuxRing) Cap() int {
 	if q.data == nil {
 		return 0
 	}
@@ -50,23 +50,23 @@ func (q *DoubleRing) Cap() int {
 }
 
 // Size return current number in queue
-func (q *DoubleRing) Len() int {
+func (q *MuxRing) Len() int {
 	tail := q.tail.Load()
 	head := q.head.Load()
 	return int(tail - head)
 }
 
-func (q *DoubleRing) IsEmpty() bool {
+func (q *MuxRing) IsEmpty() bool {
 	return q.tail.Load() == q.head.Load()
 }
 
-func (q *DoubleRing) IsFull() bool {
+func (q *MuxRing) IsFull() bool {
 	return q.tail.Load() == q.head.Load()+q.cap
 }
 
-func (q *DoubleRing) Push(val any) bool {
+func (q *MuxRing) Push(val any) bool {
 	if q.data == nil {
-		q.Init(initSize)
+		q.Init(DefaultCap)
 	}
 	if q.IsFull() {
 		return false
@@ -84,7 +84,7 @@ func (q *DoubleRing) Push(val any) bool {
 	return true
 }
 
-func (q *DoubleRing) Pop() (val any, ok bool) {
+func (q *MuxRing) Pop() (val any, ok bool) {
 	if q.IsEmpty() || q.data == nil {
 		return nil, false
 	}
@@ -105,18 +105,18 @@ func (q *DoubleRing) Pop() (val any, ok bool) {
 	return val, true
 }
 
-func (q *DoubleRing) BatchPush(val ...any) int {
+func (q *MuxRing) BatchPush(val ...any) int {
 	i, _ := q.batchPush(val...)
 	return i
 }
 
 // 返回已经push的个数，返回队列是否满
-func (q *DoubleRing) batchPush(val ...any) (int, bool) {
+func (q *MuxRing) batchPush(val ...any) (int, bool) {
 	if len(val) == 0 {
 		return 0, true
 	}
 	if q.data == nil {
-		q.Init(initSize)
+		q.Init(DefaultCap)
 	}
 	q.inMux.Lock()
 	defer q.inMux.Unlock()
@@ -140,7 +140,7 @@ func (q *DoubleRing) batchPush(val ...any) (int, bool) {
 	return availbale, true
 }
 
-func (q *DoubleRing) BatchPop(count int) ([]any, int) {
+func (q *MuxRing) BatchPop(count int) ([]any, int) {
 	if count < 1 {
 		return nil, 0
 	}
@@ -179,7 +179,7 @@ func (q *DoubleRing) BatchPop(count int) ([]any, int) {
 	return result, actual
 }
 
-func (q *DoubleRing) Clean() ([]any, int) {
+func (q *MuxRing) Clean() ([]any, int) {
 	if q.IsEmpty() {
 		return nil, 0
 	}
