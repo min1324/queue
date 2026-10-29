@@ -9,30 +9,22 @@ const (
 	MaxCap = 1<<30 - 1 // ^uint64(0) >> 2
 )
 
+type QueueOpt interface {
+	Queue
+
+	BatchPush(val ...any) (int, error)
+	BatchPop(count int) []any
+	Head() (value any, ok bool)
+	Tail() (value any, ok bool)
+	Full() bool
+	Empty() bool
+	All() []any
+	Clean()
+}
+
 // Queue 定义了带有容量管理的无锁队列接口。
 // 它扩展了基本的 Interface 接口，增加了查询和管理队列容量与长度的方法。
 type Queue interface {
-	Interface
-
-	// Cap 返回队列的容量（最多可容纳的元素数量）。
-	// 如果队列未初始化，返回 0。
-	Cap() int
-
-	// Len 返回队列中当前的元素数量。
-	// 注意：在并发访问下，此值可能是近似值。
-	// 负数结果会被钳制为 0。
-	Len() int
-
-	// Init 使用指定容量初始化队列。
-	// 此方法只能调用一次，后续调用无效。
-	// 如果 cap < 1，将使用默认容量（256）。
-	// 如果未显式调用，将在首次 Push 操作时自动调用。
-	Init(cap int)
-}
-
-// Interface 定义了队列的基本操作接口。
-// 此接口提供了所有队列实现必须支持的基本入队和出队操作。
-type Interface interface {
 	// Push 将值添加到队列的头部（写入位置）。
 	// 成功添加返回 true，队列已满返回 false。
 	// 此操作是无锁的，可安全并发使用。
@@ -42,6 +34,21 @@ type Interface interface {
 	// 成功返回值和 true，队列为空返回 nil 和 false。
 	// 此操作是无锁的，可安全并发使用。
 	Pop() (value any, ok bool)
+
+	// Cap 返回队列的容量（最多可容纳的元素数量）。
+	// 如果队列未初始化，返回 0。
+	Cap() int
+
+	// Len 返回队列中当前的元素数量。
+	// 注意：在并发访问下，此值可能是近似值。
+	// 负数结果会被钳制为 0。
+	Size() int
+
+	// Init 使用指定容量初始化队列。
+	// 此方法只能调用一次，后续调用无效。
+	// 如果 cap < 1，将使用默认容量（256）。
+	// 如果未显式调用，将在首次 Push 操作时自动调用。
+	Init(cap int)
 }
 
 // upPow2 返回 2^n-1，其中 2^n >= u，用于环形缓冲区的取模计算。

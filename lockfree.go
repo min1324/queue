@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"errors"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -12,6 +13,9 @@ const (
 	defaultCap    = DefaultCap // LockFree 默认容量
 	maxCap        = MaxCap     // LockFree 最大容量
 )
+
+var ErrLockFreeFull error = errors.New("LockFree: queue full")
+var ErrBatchCASFail error = errors.New("LockFree: concurrent batch CAS failed")
 
 // ------------------------ eface ------------------------
 
@@ -94,7 +98,7 @@ type LockFree struct {
 	data []eface
 }
 
-func New() Queue {
+func New() QueueOpt {
 	return &LockFree{}
 }
 
@@ -122,17 +126,17 @@ func (q *LockFree) Cap() int {
 	return int(q.cap)
 }
 
-func (q *LockFree) Len() int {
+func (q *LockFree) Size() int {
 	tail := q.tail.Load()
 	head := q.head.Load()
 	return int(tail - head)
 }
 
-func (q *LockFree) IsEmpty() bool {
+func (q *LockFree) Empty() bool {
 	return q.tail.Load() == q.head.Load()
 }
 
-func (q *LockFree) IsFull() bool {
+func (q *LockFree) Full() bool {
 	return q.tail.Load() == q.head.Load()+q.cap
 }
 
@@ -227,9 +231,9 @@ func (q *LockFree) Pop() (any, bool) {
 
 // PushBetch 是一个无锁队列的批量推入方法
 // 它接受可变数量的参数 vals，并成功推入队列的元素数量
-func (q *LockFree) BatchPush(vals ...any) int {
+func (q *LockFree) BatchPush(vals ...any) (int, error) {
 	if len(vals) < 1 {
-		return 0
+		return 0, nil
 	}
 	if q.data == nil {
 		q.Init(DefaultCap)
@@ -239,7 +243,7 @@ func (q *LockFree) BatchPush(vals ...any) int {
 	// 计算队列中可用的槽位数
 	available := int(q.cap - (tail - head))
 	if available < 1 {
-		return 0 // 队列已满。
+		return 0, ErrLockFreeFull // 队列已满。
 	}
 	if available > len(vals) {
 		available = len(vals)
@@ -258,7 +262,7 @@ func (q *LockFree) BatchPush(vals ...any) int {
 	// 尝试更新队列尾部位置
 	newTail := tail + uint64(available)
 	if !q.tail.CompareAndSwap(tail, newTail) {
-		return 0
+		return 0, ErrBatchCASFail
 	}
 
 	// 批量写入数据到队列
@@ -272,20 +276,20 @@ func (q *LockFree) BatchPush(vals ...any) int {
 		atomic.StorePointer(&slot.data, tmp.data)
 		atomic.StorePointer(&slot.typ, tmp.typ)
 	}
-	return available
+	return available, nil
 }
 
 // BatchPop 是一个从无锁队列中批量弹出元素的方法
 // 它接收一个整数参数 count，表示希望弹出的元素数量
 // 返回一个包含最多 count 个元素的切片和实际弹出的元素数量
-func (q *LockFree) BatchPop(count int) ([]any, int) {
+func (q *LockFree) BatchPop(count int) []any {
 	if count < 1 {
-		return nil, 0
+		return nil
 	}
 	tail := q.tail.Load()
 	head := q.head.Load()
 	if head == tail {
-		return nil, 0 // 队列为空。
+		return nil // 队列为空。
 	}
 	result := make([]any, count)
 	actual := 0
@@ -299,11 +303,88 @@ func (q *LockFree) BatchPop(count int) ([]any, int) {
 	}
 	// 调整结果切片大小，只包含实际获取的元素
 	result = result[:actual]
-	return result, actual
+	return result
 }
 
-func (q *LockFree) Clean() ([]any, int) {
-	return q.BatchPop(int(q.cap))
+func (q *LockFree) Head() (any, bool) {
+	if q.data == nil {
+		return nil, false
+	}
+	tail := q.tail.Load()
+	head := q.head.Load()
+	mask := q.mask
+	if head == tail {
+		return nil, false // 队列为空。
+	}
+	slot := &q.data[head&mask]
+	if slot.typ == nil || slot.typ == efaceNilTyp {
+		return nil, false
+	}
+	tmp := eface{typ: slot.typ, data: slot.data}
+	return *(*any)(unsafe.Pointer(&tmp)), true
+}
+
+func (q *LockFree) Tail() (any, bool) {
+	if q.data == nil {
+		return nil, false
+	}
+	tail := q.tail.Load()
+	head := q.head.Load()
+	mask := q.mask
+	if head == tail {
+		return nil, false // 队列为空。
+	}
+	// tail-1，前面push之后tail=tail+1增加了，这里的实际地址是tail-1
+	slot := &q.data[(tail-1)&mask]
+	if slot.typ == nil || slot.typ == efaceNilTyp {
+		return nil, false
+	}
+	tmp := eface{typ: slot.typ, data: slot.data}
+	return *(*any)(unsafe.Pointer(&tmp)), true
+}
+
+func (q *LockFree) All() []any {
+	if q.data == nil {
+		return nil
+	}
+	tail := q.tail.Load()
+	head := q.head.Load()
+	mask := q.mask
+	if head == tail {
+		return nil // 队列为空。
+	}
+	lq := int(tail - head)
+	result := make([]any, lq)
+	actual := 0
+	for i := 0; i < lq; i++ {
+		slot := &q.data[(head+uint64(i))&mask]
+		if slot.typ == nil || slot.typ == efaceNilTyp {
+			break
+		}
+		tmp := eface{typ: slot.typ, data: slot.data}
+		val := *(*any)(unsafe.Pointer(&tmp))
+		result[actual] = val
+	}
+	return result[:actual]
+}
+
+func (q *LockFree) Clean() {
+	if q.data == nil {
+		return
+	}
+	tail := q.tail.Load()
+	head := q.head.Load()
+	mask := q.mask
+	if head == tail {
+		return // 队列为空。
+	}
+	lq := int(tail - head)
+	q.head.Store(tail)
+	for i := 0; i < lq; i++ {
+		slot := &q.data[(head+uint64(i))&mask]
+		atomic.StorePointer(&slot.data, nil)
+		atomic.StorePointer(&slot.typ, nil)
+	}
 }
 
 // func (q *LockFree) PopBetch1(count int) ([]any, int) {

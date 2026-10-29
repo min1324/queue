@@ -1,9 +1,12 @@
 package queue
 
 import (
+	"errors"
 	"sync"
 	"sync/atomic"
 )
+
+var ErrMuxRingFull error = errors.New("MuxRing: queue full")
 
 // 双锁环形队列，可以并发Push和Pop
 type MuxRing struct {
@@ -32,7 +35,7 @@ func (q *MuxRing) Init(cap int) {
 			cap = DefaultCap
 		}
 		if uint64(cap) > MaxCap {
-			panic("queue: capacity overflow")
+			panic("MuxRing: queue capacity overflow")
 		}
 		q.mask = upPow2(uint64(cap))
 		q.cap = uint64(cap)
@@ -50,17 +53,17 @@ func (q *MuxRing) Cap() int {
 }
 
 // Size return current number in queue
-func (q *MuxRing) Len() int {
+func (q *MuxRing) Size() int {
 	tail := q.tail.Load()
 	head := q.head.Load()
 	return int(tail - head)
 }
 
-func (q *MuxRing) IsEmpty() bool {
+func (q *MuxRing) Empty() bool {
 	return q.tail.Load() == q.head.Load()
 }
 
-func (q *MuxRing) IsFull() bool {
+func (q *MuxRing) Full() bool {
 	return q.tail.Load() == q.head.Load()+q.cap
 }
 
@@ -68,7 +71,7 @@ func (q *MuxRing) Push(val any) bool {
 	if q.data == nil {
 		q.Init(DefaultCap)
 	}
-	if q.IsFull() {
+	if q.Full() {
 		return false
 	}
 	q.inMux.Lock()
@@ -85,7 +88,7 @@ func (q *MuxRing) Push(val any) bool {
 }
 
 func (q *MuxRing) Pop() (val any, ok bool) {
-	if q.IsEmpty() || q.data == nil {
+	if q.Empty() || q.data == nil {
 		return nil, false
 	}
 	q.outMux.Lock()
@@ -105,15 +108,42 @@ func (q *MuxRing) Pop() (val any, ok bool) {
 	return val, true
 }
 
-func (q *MuxRing) BatchPush(val ...any) int {
-	i, _ := q.batchPush(val...)
-	return i
+func (q *MuxRing) Tail() (val any, ok bool) {
+	if q.Empty() || q.data == nil {
+		return nil, false
+	}
+	q.outMux.Lock()
+	defer q.outMux.Unlock()
+	tail := q.tail.Load()
+	head := q.head.Load()
+	if tail == head {
+		return nil, false
+	}
+	slot := &q.data[(tail-1)&q.mask]
+	val, ok = slot.load()
+	return val, true
 }
 
-// 返回已经push的个数，返回队列是否满
-func (q *MuxRing) batchPush(val ...any) (int, bool) {
+func (q *MuxRing) Head() (val any, ok bool) {
+	if q.Empty() || q.data == nil {
+		return nil, false
+	}
+	q.outMux.Lock()
+	defer q.outMux.Unlock()
+	tail := q.tail.Load()
+	head := q.head.Load()
+	if tail == head {
+		return nil, false
+	}
+	slot := &q.data[head&q.mask]
+	val, ok = slot.load()
+	return val, true
+
+}
+
+func (q *MuxRing) BatchPush(val ...any) (int, error) {
 	if len(val) == 0 {
-		return 0, true
+		return 0, nil
 	}
 	if q.data == nil {
 		q.Init(DefaultCap)
@@ -126,7 +156,7 @@ func (q *MuxRing) batchPush(val ...any) (int, bool) {
 	mask := q.mask
 	availbale := int(q.cap - (tail - head))
 	if availbale < 0 {
-		return 0, false
+		return 0, ErrMuxRingFull
 	}
 	if availbale > len(val) {
 		availbale = len(val)
@@ -137,15 +167,15 @@ func (q *MuxRing) batchPush(val ...any) (int, bool) {
 		slot.store(val[i])
 	}
 	q.tail.Add(uint64(availbale))
-	return availbale, true
+	return availbale, nil
 }
 
-func (q *MuxRing) BatchPop(count int) ([]any, int) {
+func (q *MuxRing) BatchPop(count int) []any {
 	if count < 1 {
-		return nil, 0
+		return nil
 	}
-	if q.IsEmpty() {
-		return nil, 0
+	if q.Empty() {
+		return nil
 	}
 	q.outMux.Lock()
 	defer q.outMux.Unlock()
@@ -154,7 +184,7 @@ func (q *MuxRing) BatchPop(count int) ([]any, int) {
 	mask := q.mask
 	availbale := int(tail - head)
 	if availbale < 1 {
-		return nil, 0
+		return nil
 	}
 	if availbale > count {
 		availbale = count
@@ -176,23 +206,21 @@ func (q *MuxRing) BatchPop(count int) ([]any, int) {
 	}
 	q.head.Add(uint64(actual))
 	result = result[:actual]
-	return result, actual
+	return result
 }
 
-func (q *MuxRing) Clean() ([]any, int) {
-	if q.IsEmpty() {
-		return nil, 0
+func (q *MuxRing) All() []any {
+	if q.Empty() {
+		return nil
 	}
-	q.inMux.Lock()
-	defer q.inMux.Unlock()
 	q.outMux.Lock()
 	defer q.outMux.Unlock()
 	tail := q.tail.Load()
 	head := q.head.Load()
 	mask := q.mask
-
-	// tail == head+cap 表示队列已满，head == tail 表示队列为空。
-	q.head.Store(tail)
+	if tail == head {
+		return nil
+	}
 
 	var result = make([]any, q.cap)
 	actual := 0
@@ -204,10 +232,21 @@ func (q *MuxRing) Clean() ([]any, int) {
 		}
 		result[i-head] = v
 		actual++
-		slot.free()
 	}
-	if actual > 0 {
-		result = result[:actual]
+	result = result[:actual]
+	return result
+}
+
+func (q *MuxRing) Clean() {
+	if q.Empty() {
+		return
 	}
-	return result, actual
+	q.inMux.Lock()
+	defer q.inMux.Unlock()
+	q.outMux.Lock()
+	defer q.outMux.Unlock()
+	tail := q.tail.Load()
+	// tail == head+cap 表示队列已满，head == tail 表示队列为空。
+	q.head.Store(tail)
+	q.data = make([]entry, q.mask+1)
 }

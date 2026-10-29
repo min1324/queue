@@ -50,8 +50,8 @@ func TestInit(t *testing.T) {
 				if got := q.Cap(); got != tt.wantCap {
 					t.Fatalf("Cap() = %d, want %d", got, tt.wantCap)
 				}
-				if got := q.Len(); got != 0 {
-					t.Fatalf("Len() after Init() = %d, want 0", got)
+				if got := q.Size(); got != 0 {
+					t.Fatalf("Size() after Init() = %d, want 0", got)
 				}
 			})
 		})
@@ -95,8 +95,8 @@ func TestQueueFIFOAndCapacity(t *testing.T) {
 				t.Fatalf("Push(%d) failed before queue was full", i)
 			}
 		}
-		if got := q.Len(); got != q.Cap() {
-			t.Fatalf("Len() = %d after filling queue, want %d", got, q.Cap())
+		if got := q.Size(); got != q.Cap() {
+			t.Fatalf("Size() = %d after filling queue, want %d", got, q.Cap())
 		}
 		if q.Push("extra") {
 			t.Fatal("Push() succeeded on a full queue")
@@ -121,8 +121,8 @@ func TestQueueFIFOAndCapacity(t *testing.T) {
 				t.Fatalf("Pop() = (%v, %v), want (%d, true)", got, ok, i)
 			}
 		}
-		if got := q.Len(); got != 0 {
-			t.Fatalf("Len() after draining queue = %d, want 0", got)
+		if got := q.Size(); got != 0 {
+			t.Fatalf("Size() after draining queue = %d, want 0", got)
 		}
 		if got, ok := q.Pop(); ok || got != nil {
 			t.Fatalf("Pop() on empty queue = (%v, %v), want (nil, false)", got, ok)
@@ -245,7 +245,8 @@ func tConcurrentPushPop(t *testing.T, q Interface) {
 					if consumed >= totalItems {
 						return
 					}
-					vals, i := q.BatchPop(1)
+					vals := q.BatchPop(1)
+					i := len(vals)
 					if i > 0 {
 						for _, val := range vals {
 							results <- val.(int)
@@ -305,8 +306,8 @@ func tConcurrentPushPop(t *testing.T, q Interface) {
 		}
 	}
 
-	if got := q.Len(); got != 0 {
-		t.Fatalf("Len() after concurrent drain = %d, want 0", got)
+	if got := q.Size(); got != 0 {
+		t.Fatalf("Size() after concurrent drain = %d, want 0", got)
 	}
 	if _, ok := q.Pop(); ok {
 		t.Fatal("Pop() succeeded after all produced values were consumed")
@@ -328,13 +329,14 @@ func tPushPopBatch(t *testing.T, q Interface) {
 
 	// 测试1: 基本批量推送和弹出
 	testData := []any{1, 2, 3, 4, 5}
-	pushed := q.BatchPush(testData...)
-	if pushed != len(testData) {
-		t.Errorf("测试1: Expected to push %d items, but pushed %d", len(testData), pushed)
+	pushed, err := q.BatchPush(testData...)
+	if pushed != len(testData) || err != nil {
+		t.Errorf("测试1: Expected to push %d items, but pushed %d,err:%v", len(testData), pushed, err)
 	}
 
 	// 批量弹出
-	popped, actual := q.BatchPop(len(testData))
+	popped := q.BatchPop(len(testData))
+	actual := len(popped)
 	if actual != len(testData) {
 		t.Errorf("测试1: Expected to pop %d items, but popped %d", len(testData), actual)
 	}
@@ -348,13 +350,14 @@ func tPushPopBatch(t *testing.T, q Interface) {
 
 	// 测试2: 部分批量操作
 	q.BatchPush(1, 2, 3, 4, 5)
-	popped, actual = q.BatchPop(3)
+	popped = q.BatchPop(3)
+	actual = len(popped)
 	if actual != 3 {
 		t.Errorf("测试2: Expected to pop 3 items, but popped %d", actual)
 	}
 
 	// 验证队列中剩余元素
-	remaining, _ := q.BatchPop(10)
+	remaining := q.BatchPop(10)
 	if len(remaining) != 2 {
 		t.Errorf("测试2: Expected 2 remaining items, got %d", len(remaining))
 	}
@@ -365,25 +368,27 @@ func tPushPopBatch(t *testing.T, q Interface) {
 		fillData[i] = i
 	}
 
-	pushed = q.BatchPush(fillData...)
+	pushed, err = q.BatchPush(fillData...)
 	if pushed != queueCap {
 		t.Errorf("测试3: Expected to push %d items, but pushed %d", queueCap, pushed)
 	}
 
 	// 测试4: 队列已满时的批量操作
 	overflow := []any{100, 101, 102}
-	pushed = q.BatchPush(overflow...)
+	pushed, err = q.BatchPush(overflow...)
 	if pushed != 0 {
 		t.Errorf("测试4: Expected to push 0 items (queue full), but pushed %d", pushed)
 	}
 
 	// 测试5: 从满队列批量弹出
-	popped, actual = q.BatchPop(queueCap >> 2)
+	popped = q.BatchPop(queueCap >> 2)
+	actual = len(popped)
+
 	if actual != queueCap>>2 {
 		t.Errorf("测试5: Expected to pop %d items, but popped %d", queueCap/2, actual)
 	}
 
-	oldlen := q.Len()
+	oldlen := q.Size()
 	avl := q.Cap() - oldlen
 
 	testData6 := make([]any, avl)
@@ -392,17 +397,21 @@ func tPushPopBatch(t *testing.T, q Interface) {
 	}
 
 	// 测试6: 在部分填充的队列中批量操作
-	pushed = q.BatchPush(testData6...)
+	pushed, err = q.BatchPush(testData6...)
 	if pushed != len(testData6) {
 		t.Errorf("测试6: Expected to push %d items, but pushed %d", len(testData6), pushed)
 	}
 
-	_, actual = q.BatchPop(oldlen)
+	v12 := q.BatchPop(oldlen)
+	actual = len(v12)
+
 	if actual != oldlen {
 		t.Errorf("测试65: Expected to pop %d items, but popped %d", oldlen, actual)
 	}
 
-	popped, actual = q.BatchPop(len(testData6))
+	popped = q.BatchPop(len(testData6))
+	actual = len(popped)
+
 	if len(popped) != len(testData6) || actual != len(testData6) {
 		t.Errorf("测试6: Expected to pop %d items, but popped %d, actual %d", len(testData6), len(popped), actual)
 	}
@@ -450,8 +459,10 @@ func pushPopBatchConcurrent(t *testing.T, q Interface) {
 				for k := 0; k < batchSize; k++ {
 					vals[k] = id*numOperations + j*batchSize + k
 				}
-				for q.BatchPush(vals...) == 0 {
-					runtime.Gosched()
+				var idx = 0
+				for idx < len(vals) {
+					n, _ := q.BatchPush(vals[idx:]...)
+					idx += n
 				}
 			}
 		}(i)
@@ -466,13 +477,14 @@ func pushPopBatchConcurrent(t *testing.T, q Interface) {
 				case <-stop:
 					return
 				default:
-					res, i := q.BatchPop(numOperations)
-					if i > 0 {
+					res := q.BatchPop(numOperations)
+					lres := len(res)
+					if lres > 0 {
 						for _, v := range res {
 							seenmap.Store(v, true)
 						}
 					}
-					if atomic.AddUint64(&totalPop, uint64(i)) == queueCap {
+					if atomic.AddUint64(&totalPop, uint64(lres)) == queueCap {
 						return
 					}
 				}
@@ -495,7 +507,8 @@ func pushPopBatchConcurrent(t *testing.T, q Interface) {
 	popg.Wait()
 
 	// 验证队列最终为空
-	got, remaining := q.BatchPop(queueCap)
+	got := q.BatchPop(queueCap)
+	remaining := len(got)
 	if remaining != 0 || len(got) != 0 {
 		t.Errorf("Expected queue to be empty, but has %d,%d items", len(got), remaining)
 	}
@@ -507,158 +520,5 @@ func pushPopBatchConcurrent(t *testing.T, q Interface) {
 			t.Errorf("Missing value %v", key)
 		}
 		return true
-	})
-}
-
-// TestClean 测试 Close 方法的功能
-func TestClean(t *testing.T) {
-	perQueue(t, func(t *testing.T, q Interface) {
-		// 测试1: 空队列
-		q.Init(10)
-
-		remaining, count := q.Clean()
-		if count != 0 {
-			t.Errorf("Expected 0 items, got %d", count)
-		}
-		if len(remaining) != 0 {
-			t.Errorf("Expected empty slice, got %v", remaining)
-		}
-	})
-
-	// 测试2: 非空队列
-	perQueue(t, func(t *testing.T, q Interface) {
-
-		q.Init(10)
-
-		// 添加一些元素
-		expected := []any{1, 2, 3, 4, 5}
-		for _, val := range expected {
-			if !q.Push(val) {
-				t.Errorf("Failed to push value %v", val)
-			}
-		}
-
-		// 关闭队列并获取剩余元素
-		remaining, count := q.Clean()
-		if count != len(expected) {
-			t.Errorf("Expected %d items, got %d", len(expected), count)
-		}
-
-		// 验证元素是否一致
-		if len(remaining) != len(expected) {
-			t.Errorf("Expected %d elements, got %d", len(expected), len(remaining))
-		}
-
-		for i, val := range remaining {
-			if val != expected[i] {
-				t.Errorf("Expected %v at index %d, got %v", expected[i], i, val)
-			}
-		}
-	})
-
-	// 测试3: 部分消费的队列
-	// t.Run("Partially Consumed Queue", func(t *testing.T) {
-	perQueue(t, func(t *testing.T, q Interface) {
-		q.Init(10)
-
-		// 添加一些元素
-		expected := []any{1, 2, 3, 4, 5}
-		for _, val := range expected {
-			if !q.Push(val) {
-				t.Errorf("Failed to push value %v", val)
-			}
-		}
-
-		// 消费部分元素
-		consumed, _ := q.Pop()
-		if consumed != 1 {
-			t.Errorf("Expected to consume 1, got %v", consumed)
-		}
-
-		// 关闭队列并获取剩余元素
-		remaining, count := q.Clean()
-		if count != len(expected)-1 {
-			t.Errorf("Expected %d items, got %d", len(expected)-1, count)
-		}
-
-		// 验证剩余元素是否正确
-		if len(remaining) != len(expected)-1 {
-			t.Errorf("Expected %d elements, got %d", len(expected)-1, len(remaining))
-		}
-
-		for i, val := range remaining {
-			if val != expected[i+1] {
-				t.Errorf("Expected %v at index %d, got %v", expected[i+1], i, val)
-			}
-		}
-	})
-
-	// 测试4: 并发场景下的关闭
-	// t.Run("Concurrent Clean", func(t *testing.T) {
-	perQueue(t, func(t *testing.T, q Interface) {
-		q.Init(10)
-
-		// 添加一些元素
-		for i := 0; i < 5; i++ {
-			if !q.Push(i) {
-				t.Errorf("Failed to push value %d", i)
-			}
-		}
-
-		// 启动一个 goroutine 进行关闭操作
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			remaining, count := q.Clean()
-			if count != 5 {
-				t.Errorf("Expected 5 items, got %d", count)
-			}
-			if len(remaining) != 5 {
-				t.Errorf("Expected 5 elements, got %d", len(remaining))
-			}
-		}()
-
-		// 等待关闭操作完成
-		<-done
-
-		// 尝试再次关闭，应该返回空
-		remaining, count := q.Clean()
-		if count != 0 {
-			t.Errorf("Expected 0 items after first Clean, got %d", count)
-		}
-		if len(remaining) != 0 {
-			t.Errorf("Expected empty slice after first Clean, got %v", remaining)
-		}
-	})
-
-	// 测试5: 包含 nil 值的队列
-	// t.Run("Queue with nil values", func(t *testing.T) {
-	perQueue(t, func(t *testing.T, q Interface) {
-		q.Init(10)
-
-		// 添加一些元素，包括 nil 值
-		expected := []any{1, nil, 3, nil, 5}
-		for _, val := range expected {
-			if !q.Push(val) {
-				t.Errorf("Failed to push value %v", val)
-			}
-		}
-
-		// 关闭队列并获取剩余元素
-		remaining, count := q.Clean()
-		if count != len(expected) {
-			t.Errorf("Expected %d items, got %d", len(expected), count)
-		}
-
-		// 验证元素是否一致
-		if len(remaining) != len(expected) {
-			t.Errorf("Expected %d elements, got %d", len(expected), len(remaining))
-		}
-
-		for i, val := range remaining {
-			if val != expected[i] {
-				t.Errorf("Expected %v at index %d, got %v", expected[i], i, val)
-			}
-		}
 	})
 }

@@ -31,8 +31,5 @@ const (
 
 // Interface use in stack,queue testing
 type Interface interface {
-	queue.Queue
-	BatchPop(count int) ([]any, int)
-	BatchPush(val ...any) int
-	Clean() ([]any, int)
+	queue.QueueOpt
 }
