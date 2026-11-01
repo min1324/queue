@@ -29,20 +29,27 @@ type MuxRing struct {
 	data []entry
 }
 
+// 必须在锁里面调用
+func (q *MuxRing) initInLock(cap int) {
+	if cap < 1 {
+		cap = DefaultCap
+	}
+	if uint64(cap) > MaxCap {
+		panic("MuxRing: queue capacity overflow")
+	}
+	q.mask = upPow2(uint64(cap))
+	q.cap = uint64(cap)
+	q.head.Store(0)
+	q.tail.Store(0)
+	q.data = make([]entry, q.mask+1)
+}
+
 func (q *MuxRing) Init(cap int) {
-	q.once.Do(func() {
-		if cap < 1 {
-			cap = DefaultCap
-		}
-		if uint64(cap) > MaxCap {
-			panic("MuxRing: queue capacity overflow")
-		}
-		q.mask = upPow2(uint64(cap))
-		q.cap = uint64(cap)
-		q.head.Store(0)
-		q.tail.Store(0)
-		q.data = make([]entry, q.mask+1)
-	})
+	q.inMux.Lock()
+	defer q.inMux.Unlock()
+	if q.data == nil {
+		q.initInLock(cap)
+	}
 }
 
 func (q *MuxRing) Cap() int {
@@ -68,14 +75,14 @@ func (q *MuxRing) Full() bool {
 }
 
 func (q *MuxRing) Push(val any) bool {
-	if q.data == nil {
-		q.Init(DefaultCap)
-	}
-	if q.Full() {
+	if q.Full() && q.cap > 0 {
 		return false
 	}
 	q.inMux.Lock()
 	defer q.inMux.Unlock()
+	if q.data == nil {
+		q.initInLock(DefaultCap)
+	}
 	tail := q.tail.Load()
 	head := q.head.Load()
 	if tail-head == q.cap {
@@ -88,7 +95,7 @@ func (q *MuxRing) Push(val any) bool {
 }
 
 func (q *MuxRing) Pop() (val any, ok bool) {
-	if q.Empty() || q.data == nil {
+	if q.Empty() {
 		return nil, false
 	}
 	q.outMux.Lock()
@@ -100,16 +107,13 @@ func (q *MuxRing) Pop() (val any, ok bool) {
 	}
 	slot := &q.data[head&q.mask]
 	val, ok = slot.load()
-	if !ok {
-		return nil, false
-	}
 	slot.free()
 	q.head.Add(1)
-	return val, true
+	return val, ok
 }
 
 func (q *MuxRing) Tail() (val any, ok bool) {
-	if q.Empty() || q.data == nil {
+	if q.Empty() {
 		return nil, false
 	}
 	q.outMux.Lock()
@@ -125,7 +129,7 @@ func (q *MuxRing) Tail() (val any, ok bool) {
 }
 
 func (q *MuxRing) Head() (val any, ok bool) {
-	if q.Empty() || q.data == nil {
+	if q.Empty() {
 		return nil, false
 	}
 	q.outMux.Lock()
@@ -145,11 +149,11 @@ func (q *MuxRing) BatchPush(val ...any) (int, error) {
 	if len(val) == 0 {
 		return 0, nil
 	}
-	if q.data == nil {
-		q.Init(DefaultCap)
-	}
 	q.inMux.Lock()
 	defer q.inMux.Unlock()
+	if q.data == nil {
+		q.initInLock(DefaultCap)
+	}
 
 	tail := q.tail.Load()
 	head := q.head.Load()
@@ -171,10 +175,7 @@ func (q *MuxRing) BatchPush(val ...any) (int, error) {
 }
 
 func (q *MuxRing) BatchPop(count int) []any {
-	if count < 1 {
-		return nil
-	}
-	if q.Empty() {
+	if count < 1 || q.Empty() {
 		return nil
 	}
 	q.outMux.Lock()
