@@ -76,7 +76,7 @@ type LockFree struct {
 	once sync.Once
 
 	cap  uint64 // 队列实际容量
-	mask uint64 // 2^n-1 > cap
+	mask uint64 // 2^n-1 > cap, 用于取模计算
 
 	tail atomic.Uint64 // 指向下次写入数据的位置 (tail & mod)
 	_    [cacheLineSize - unsafe.Sizeof(atomic.Uint64{})]byte
@@ -103,6 +103,16 @@ func New() QueueOpt {
 }
 
 func (q *LockFree) Init(cap int) {
+	if q.notInit() {
+		q.lazyInit(cap)
+	}
+}
+
+func (q *LockFree) notInit() bool {
+	return q.mask == 0
+}
+
+func (q *LockFree) lazyInit(cap int) {
 	q.once.Do(func() {
 		if cap < 1 {
 			cap = defaultCap
@@ -110,17 +120,19 @@ func (q *LockFree) Init(cap int) {
 		if uint64(cap) > maxCap {
 			panic("queue: capacity overflow")
 		}
-		q.mask = kfifo(uint64(cap))
-		q.cap = uint64(cap)
+		mask := kfifo(uint64(cap))
+
 		q.head.Store(0)
 		q.tail.Store(0)
 
-		q.data = make([]eface, q.mask+1)
+		q.data = make([]eface, mask+1)
+		q.cap = uint64(cap)
+		q.mask = mask
 	})
 }
 
 func (q *LockFree) Cap() int {
-	if q.data == nil {
+	if q.notInit() {
 		return 0
 	}
 	return int(q.cap)
@@ -149,9 +161,8 @@ func (q *LockFree) Full() bool {
 //
 //	bool - 成功入队返回true，队列已满返回false
 func (q *LockFree) Push(val any) bool {
-	if q.data == nil {
-		q.Init(DefaultCap)
-	}
+	q.lazyInit(defaultCap)
+
 	// 处理nil值，使用特殊值代替
 	if val == nil {
 		val = efaceNilVal
@@ -192,7 +203,7 @@ func (q *LockFree) Push(val any) bool {
 // 参数: 无
 // 返回值: (any, bool) - 取出的元素和是否成功取出的标志
 func (q *LockFree) Pop() (any, bool) {
-	if q.data == nil {
+	if q.notInit() {
 		return nil, false
 	}
 	for {
@@ -235,9 +246,8 @@ func (q *LockFree) BatchPush(vals ...any) (int, error) {
 	if len(vals) < 1 {
 		return 0, nil
 	}
-	if q.data == nil {
-		q.Init(DefaultCap)
-	}
+	q.lazyInit(defaultCap)
+
 	tail := q.tail.Load()
 	head := q.head.Load()
 	// 计算队列中可用的槽位数
@@ -283,7 +293,7 @@ func (q *LockFree) BatchPush(vals ...any) (int, error) {
 // 它接收一个整数参数 count，表示希望弹出的元素数量
 // 返回一个包含最多 count 个元素的切片和实际弹出的元素数量
 func (q *LockFree) BatchPop(count int) []any {
-	if count < 1 {
+	if count < 1 || q.notInit() {
 		return nil
 	}
 	tail := q.tail.Load()
@@ -307,7 +317,7 @@ func (q *LockFree) BatchPop(count int) []any {
 }
 
 func (q *LockFree) Head() (any, bool) {
-	if q.data == nil {
+	if q.notInit() {
 		return nil, false
 	}
 	tail := q.tail.Load()
@@ -325,7 +335,7 @@ func (q *LockFree) Head() (any, bool) {
 }
 
 func (q *LockFree) Tail() (any, bool) {
-	if q.data == nil {
+	if q.notInit() {
 		return nil, false
 	}
 	tail := q.tail.Load()
@@ -344,7 +354,7 @@ func (q *LockFree) Tail() (any, bool) {
 }
 
 func (q *LockFree) All() []any {
-	if q.data == nil {
+	if q.notInit() {
 		return nil
 	}
 	tail := q.tail.Load()
@@ -369,7 +379,7 @@ func (q *LockFree) All() []any {
 }
 
 func (q *LockFree) Clean() {
-	if q.data == nil {
+	if q.notInit() {
 		return
 	}
 	tail := q.tail.Load()
