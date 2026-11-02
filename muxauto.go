@@ -108,9 +108,10 @@ func (q *MuxAuto) Push(val any) bool {
 func (s *MuxAuto) growWorkInLock(delta uint64) {
 	const incGrow = 1 << 15
 	curCap := s.cap
-	if curCap >= MaxCap || delta < 1 {
+	if curCap >= MaxCap || delta < 1 || curCap+delta > MaxCap {
 		return
 	}
+	// curCap+delta < MaxCap
 	newCap := curCap
 	// TODO adjust grow size
 	for newCap < curCap+delta {
@@ -120,10 +121,10 @@ func (s *MuxAuto) growWorkInLock(delta uint64) {
 			newCap <<= 1
 		}
 	}
-	newMask := upPow2(newCap)
-	if newMask > MaxCap || newMask < s.mask {
-		newMask = MaxCap
+	if newCap > MaxCap {
+		newCap = MaxCap
 	}
+	newMask := upPow2(newCap)
 	if newMask == s.mask {
 		s.cap = newCap
 		return
@@ -162,14 +163,17 @@ func (q *MuxAuto) Pop() (val any, ok bool) {
 }
 
 func (s *MuxAuto) shrinkWorkInLock() {
-	const shrinkThreshold = 4
 	curCap := s.cap
 	curLen := s.tail.Load() - s.head.Load()
-	if curCap <= DefaultCap || curLen > curCap>>shrinkThreshold {
+	if curCap <= DefaultCap || curLen >= curCap>>3 {
 		return
 	}
 
+	// 当前长度是cap的1/8时，开始缩容
 	newCap := curCap >> 1
+	for newCap > DefaultCap && curLen < newCap>>3 {
+		newCap >>= 1
+	}
 	if newCap < DefaultCap {
 		newCap = DefaultCap
 	}
@@ -180,10 +184,9 @@ func (s *MuxAuto) shrinkWorkInLock() {
 	}
 	newData := make([]entry, newMask+1)
 	head, tail := s.head.Load(), s.tail.Load()
-	lenData := tail - head + s.cap
 	mask := s.mask
-	for i := uint64(0); i < lenData; i++ {
-		newData[i&newMask] = s.data[(i+head)&mask]
+	for i := head; i < tail; i++ {
+		newData[i&newMask] = s.data[i&mask]
 	}
 	s.data = newData
 	s.mask = newMask
@@ -220,7 +223,6 @@ func (q *MuxAuto) Head() (val any, ok bool) {
 	slot := &q.data[head&q.mask]
 	val, ok = slot.load()
 	return val, true
-
 }
 
 func (q *MuxAuto) BatchPush(val ...any) (int, error) {
