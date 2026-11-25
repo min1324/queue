@@ -24,6 +24,22 @@ type eface struct {
 	typ, data unsafe.Pointer
 }
 
+func newEface(val any) *eface {
+	if val == nil {
+		val = efaceNilVal
+	}
+	return (*eface)(unsafe.Pointer(&val))
+}
+
+func newAny(typ, data unsafe.Pointer) any {
+	tmp := eface{typ: typ, data: data}
+	val := *(*any)(unsafe.Pointer(&tmp))
+	if val == efaceNilVal {
+		val = nil
+	}
+	return val
+}
+
 type efaceNil struct{}
 
 var (
@@ -164,11 +180,8 @@ func (q *LockFree) Full() bool {
 //	bool - 成功入队返回true，队列已满返回false
 func (q *LockFree) Push(val any) bool {
 	q.lazyInit(defaultCap)
-	// 处理nil值，使用特殊值代替
-	if val == nil {
-		val = efaceNilVal
-	}
-	tmp := (*eface)(unsafe.Pointer(&val))
+
+	tmp := newEface(val)
 	for {
 		tail := q.tail.Load()
 		head := q.head.Load()
@@ -216,11 +229,8 @@ func (q *LockFree) Pop() (any, bool) {
 			// 已完成此槽位使用的信号。
 			atomic.StorePointer(&slot.data, nil)
 			atomic.StorePointer(&slot.typ, nil)
-			tmp := eface{typ: typ, data: data}
-			if tmp == efaceNilVal {
-				return nil, true
-			}
-			val := *(*any)(unsafe.Pointer(&tmp))
+
+			val := newAny(typ, data)
 			return val, true
 		}
 		runtime.Gosched()
@@ -265,12 +275,8 @@ func (q *LockFree) BatchPush(vals ...any) (int, error) {
 
 	// 批量写入数据到队列
 	for i := 0; i < available; i++ {
+		tmp := newEface(vals[i])
 		slot := &q.data[(tail+uint64(i))&mask]
-		val := vals[i]
-		if val == nil {
-			val = efaceNilVal
-		}
-		tmp := (*eface)(unsafe.Pointer(&val))
 		atomic.StorePointer(&slot.data, tmp.data)
 		atomic.StorePointer(&slot.typ, tmp.typ)
 	}
@@ -310,12 +316,8 @@ func (q *LockFree) PushAll(vals ...any) (int, error) {
 
 	// 批量写入数据到队列
 	for i := 0; i < available; i++ {
+		tmp := newEface(vals[i])
 		slot := &q.data[(tail+uint64(i))&mask]
-		val := vals[i]
-		if val == nil {
-			val = efaceNilVal
-		}
-		tmp := (*eface)(unsafe.Pointer(&val))
 		atomic.StorePointer(&slot.data, tmp.data)
 		atomic.StorePointer(&slot.typ, tmp.typ)
 	}
@@ -353,9 +355,6 @@ func (q *LockFree) BatchPop(count int) []any {
 
 // Head 返回队列头部元素
 func (q *LockFree) Head() (any, bool) {
-	// if q.notInit() {
-	// 	return nil, false
-	// }
 	for {
 		tail := q.tail.Load()
 		head := q.head.Load()
@@ -370,8 +369,8 @@ func (q *LockFree) Head() (any, bool) {
 			runtime.Gosched()
 			continue
 		}
-		tmp := eface{typ: typ, data: data}
-		return *(*any)(unsafe.Pointer(&tmp)), true
+		val := newAny(typ, data)
+		return val, true
 	}
 }
 
@@ -395,8 +394,8 @@ func (q *LockFree) Tail() (any, bool) {
 			runtime.Gosched()
 			continue
 		}
-		tmp := eface{typ: typ, data: data}
-		return *(*any)(unsafe.Pointer(&tmp)), true
+		val := newAny(typ, data)
+		return val, true
 	}
 }
 
@@ -419,6 +418,33 @@ func (q *LockFree) Clean() {
 			atomic.StorePointer(&slot.typ, nil)
 		}
 	}
+}
+
+func (q *LockFree) ALL() []any {
+	tail := q.tail.Load()
+	head := q.head.Load()
+	mask := q.mask
+	if head == tail {
+		return nil // 队列为空。
+	}
+	size := int(tail - head)
+	result := make([]any, size)
+	actual := 0
+
+	for i := 0; i < size; i++ {
+		slot := &q.data[(head+uint64(i))&mask]
+		typ := atomic.LoadPointer(&slot.typ)
+		data := atomic.LoadPointer(&slot.data)
+		if typ == nil {
+			// 并发写入未完成，终止
+			break
+		}
+		val := newAny(typ, data)
+		result = append(result, val)
+		actual++
+	}
+	result = result[:actual]
+	return result
 }
 
 // func (q *LockFree) PopBetch1(count int) []any {
@@ -454,17 +480,9 @@ func (q *LockFree) Clean() {
 // 	actual := 0
 // 	for i := 0; i < available; i++ {
 // 		slot := &q.data[(head+uint64(i))&mask]
-// 		slotTyp := atomic.LoadPointer(&slot.typ)
-// 		slotData := atomic.LoadPointer(&slot.data)
-// 		atomic.StorePointer(&slot.data, nil)
-// 		atomic.StorePointer(&slot.typ, nil)
-
-// 		tmp := eface{typ: slotTyp, data: slotData}
-// 		val := *(*any)(unsafe.Pointer(&tmp))
-// 		if val == efaceNilVal {
-// 			val = nil
-// 		}
-// 		result[i] = val
+// 		data := atomic.SwapPointer(&slot.data, nil)
+// 		typ := atomic.SwapPointer(&slot.typ, nil)
+// 		result[i] = newAny(typ, data)
 // 		actual++
 // 	}
 // 	result = result[:actual]
