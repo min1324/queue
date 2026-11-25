@@ -326,6 +326,35 @@ func (q *LockFree) PushAll(vals ...any) (int, error) {
 	return available, nil
 }
 
+// // BatchPop 是一个从无锁队列中批量弹出元素的方法
+// // 它接收一个整数参数 count，表示希望弹出的元素数量
+// // 返回实际弹出的元素数量元素的切片
+// func (q *LockFree) BatchPop(count int) []any {
+// 	if count < 1 || q.notInit() {
+// 		return nil
+// 	}
+// 	size := q.Size()
+// 	if size < 1 {
+// 		return nil
+// 	}
+// 	if count > size {
+// 		count = size
+// 	}
+// 	result := make([]any, count)
+// 	actual := 0
+// 	for i := 0; i < count; i++ {
+// 		val, ok := q.Pop()
+// 		if !ok {
+// 			break
+// 		}
+// 		result[actual] = val
+// 		actual++
+// 	}
+// 	// 调整结果切片大小，只包含实际获取的元素
+// 	result = result[:actual]
+// 	return result
+// }
+
 // BatchPop 是一个从无锁队列中批量弹出元素的方法
 // 它接收一个整数参数 count，表示希望弹出的元素数量
 // 返回实际弹出的元素数量元素的切片
@@ -333,24 +362,40 @@ func (q *LockFree) BatchPop(count int) []any {
 	if count < 1 || q.notInit() {
 		return nil
 	}
-	size := q.Size()
-	if size < 1 {
+
+	head := q.head.Load()
+	tail := q.tail.Load()
+
+	available := int(tail - head)
+	if available < 1 {
 		return nil
 	}
-	if count > size {
-		count = size
+	if available > count {
+		available = count
 	}
-	result := make([]any, count)
-	actual := 0
-	for i := 0; i < count; i++ {
-		val, ok := q.Pop()
-		if !ok {
+	mask := q.mask
+	for i := 0; i < available; i++ {
+		slot := &q.data[(head+uint64(i))&mask]
+		slotTyp := atomic.LoadPointer(&slot.typ)
+		if slotTyp == nil {
+			available = i
 			break
 		}
-		result[actual] = val
+	}
+	newHead := head + uint64(available)
+	if !q.head.CompareAndSwap(head, newHead) {
+		return nil
+	}
+
+	result := make([]any, available)
+	actual := 0
+	for i := 0; i < available; i++ {
+		slot := &q.data[(head+uint64(i))&mask]
+		data := atomic.SwapPointer(&slot.data, nil)
+		typ := atomic.SwapPointer(&slot.typ, nil)
+		result[i] = newAny(typ, data)
 		actual++
 	}
-	// 调整结果切片大小，只包含实际获取的元素
 	result = result[:actual]
 	return result
 }
@@ -449,45 +494,3 @@ func (q *LockFree) All() []any {
 	result = result[:actual]
 	return result
 }
-
-// func (q *LockFree) BatchPop(count int) []any {
-// 	if count < 1 || q.notInit() {
-// 		return nil
-// 	}
-
-// 	head := q.head.Load()
-// 	tail := q.tail.Load()
-
-// 	available := int(tail - head)
-// 	if available < 1 {
-// 		return nil
-// 	}
-// 	if available > count {
-// 		available = count
-// 	}
-// 	mask := q.mask
-// 	for i := 0; i < available; i++ {
-// 		slot := &q.data[(head+uint64(i))&mask]
-// 		slotTyp := atomic.LoadPointer(&slot.typ)
-// 		if slotTyp == nil {
-// 			available = i
-// 			break
-// 		}
-// 	}
-// 	newHead := head + uint64(available)
-// 	if !q.head.CompareAndSwap(head, newHead) {
-// 		return nil
-// 	}
-
-// 	result := make([]any, available)
-// 	actual := 0
-// 	for i := 0; i < available; i++ {
-// 		slot := &q.data[(head+uint64(i))&mask]
-// 		data := atomic.SwapPointer(&slot.data, nil)
-// 		typ := atomic.SwapPointer(&slot.typ, nil)
-// 		result[i] = newAny(typ, data)
-// 		actual++
-// 	}
-// 	result = result[:actual]
-// 	return result
-// }
