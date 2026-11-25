@@ -28,7 +28,6 @@ type efaceNil struct{}
 
 var (
 	efaceNilVal any = (*efaceNil)(nil)
-	efaceNilTyp     = (*eface)(unsafe.Pointer(&efaceNilVal)).typ
 )
 
 func init() {
@@ -102,14 +101,13 @@ func New() QueueOpt {
 	return &LockFree{}
 }
 
+// Init 初始化队列，只执行一次
 func (q *LockFree) Init(cap int) {
-	if q.notInit() {
-		q.lazyInit(cap)
-	}
+	q.lazyInit(cap)
 }
 
 func (q *LockFree) notInit() bool {
-	return q.mask == 0
+	return atomic.LoadUint64(&q.cap) == 0
 }
 
 func (q *LockFree) lazyInit(cap int) {
@@ -126,11 +124,12 @@ func (q *LockFree) lazyInit(cap int) {
 		q.tail.Store(0)
 
 		q.data = make([]eface, mask+1)
-		q.cap = uint64(cap)
 		q.mask = mask
+		atomic.StoreUint64(&q.cap, uint64(cap))
 	})
 }
 
+// Cap 返回队列最大容量
 func (q *LockFree) Cap() int {
 	if q.notInit() {
 		return 0
@@ -138,16 +137,19 @@ func (q *LockFree) Cap() int {
 	return int(q.cap)
 }
 
+// Size 返回队列元素个数
 func (q *LockFree) Size() int {
 	tail := q.tail.Load()
 	head := q.head.Load()
 	return int(tail - head)
 }
 
+// Empty 返回队列是否为空
 func (q *LockFree) Empty() bool {
 	return q.tail.Load() == q.head.Load()
 }
 
+// Full 返回队列是否已满
 func (q *LockFree) Full() bool {
 	return q.tail.Load() == q.head.Load()+q.cap
 }
@@ -162,32 +164,25 @@ func (q *LockFree) Full() bool {
 //	bool - 成功入队返回true，队列已满返回false
 func (q *LockFree) Push(val any) bool {
 	q.lazyInit(defaultCap)
-
 	// 处理nil值，使用特殊值代替
 	if val == nil {
 		val = efaceNilVal
 	}
 	tmp := (*eface)(unsafe.Pointer(&val))
 	for {
-		// 获取当前队列的尾部和头部位置
 		tail := q.tail.Load()
 		head := q.head.Load()
-		// 检查队列是否已满
 		if tail-head >= q.cap {
 			return false // 队列已满。
 		}
 		slot := &q.data[tail&q.mask]
 
-		// 检查头部槽位是否已被 pop 释放。
 		// 如果 typ != nil，表示 Pop 仍在清理此槽位。
-		// 自旋等待而不是立即返回 false，
-		// 因为该槽位很快就会可用。
 		typ := atomic.LoadPointer(&slot.typ)
 		if typ != nil {
 			runtime.Gosched()
 			continue
 		}
-		// 递增 head。这将槽位的所有权传递给 pop
 		if q.tail.CompareAndSwap(tail, tail+1) {
 			// 先写入 data，然后发布 typ 作为存储屏障，
 			atomic.StorePointer(&slot.data, tmp.data)
@@ -203,9 +198,6 @@ func (q *LockFree) Push(val any) bool {
 // 参数: 无
 // 返回值: (any, bool) - 取出的元素和是否成功取出的标志
 func (q *LockFree) Pop() (any, bool) {
-	if q.notInit() {
-		return nil, false
-	}
 	for {
 		tail := q.tail.Load()
 		head := q.head.Load()
@@ -214,25 +206,20 @@ func (q *LockFree) Pop() (any, bool) {
 		}
 		slot := &q.data[head&q.mask]
 		typ := atomic.LoadPointer(&slot.typ)
+		data := atomic.LoadPointer(&slot.data)
 		if typ == nil {
 			runtime.Gosched()
 			continue
 		}
 		if q.head.CompareAndSwap(head, head+1) {
-			// 以确保正确的内存排序并避免弱排序架构（如 ARM）上的数据竞争。
-			// 再次读取槽位的类型和数据，确保获取的是最新的值
-			slotTyp := atomic.LoadPointer(&slot.typ)
-			slotData := atomic.LoadPointer(&slot.data)
-
 			// 我们先清除 data，然后通过原子写入 typ 来发布我们
 			// 已完成此槽位使用的信号。
 			atomic.StorePointer(&slot.data, nil)
 			atomic.StorePointer(&slot.typ, nil)
-
-			if slotTyp == nil || slotTyp == efaceNilTyp {
-				return nil, slotTyp == efaceNilTyp
+			tmp := eface{typ: typ, data: data}
+			if tmp == efaceNilVal {
+				return nil, true
 			}
-			tmp := eface{typ: slotTyp, data: slotData}
 			val := *(*any)(unsafe.Pointer(&tmp))
 			return val, true
 		}
@@ -240,8 +227,9 @@ func (q *LockFree) Pop() (any, bool) {
 	}
 }
 
-// PushBetch 是一个无锁队列的批量推入方法
-// 它接受可变数量的参数 vals，并成功推入队列的元素数量
+// PushBetch 是一个批量尽可能推入方法
+// 返回成功推入队列的元素数量
+// 错误分为：队列满和并发cas失败
 func (q *LockFree) BatchPush(vals ...any) (int, error) {
 	if len(vals) < 1 {
 		return 0, nil
@@ -289,17 +277,64 @@ func (q *LockFree) BatchPush(vals ...any) (int, error) {
 	return available, nil
 }
 
+// PushAll 批量推入方，推入所有vals
+func (q *LockFree) PushAll(vals ...any) (int, error) {
+	if len(vals) < 1 {
+		return 0, nil
+	}
+	q.lazyInit(defaultCap)
+
+	tail := q.tail.Load()
+	head := q.head.Load()
+	// 计算队列中可用的槽位数
+	available := int(q.cap - (tail - head))
+	if available < 1 || available < len(vals) {
+		return 0, ErrLockFreeFull // 队列已满。
+	}
+	available = len(vals)
+
+	// 预检测所有槽位是否可用
+	mask := q.mask
+	for i := 0; i < available; i++ {
+		slot := &q.data[(tail+uint64(i))&mask]
+		if atomic.LoadPointer(&slot.typ) != nil {
+			return 0, ErrLockFreeFull
+		}
+	}
+
+	// 尝试更新队列尾部位置
+	newTail := tail + uint64(available)
+	if !q.tail.CompareAndSwap(tail, newTail) {
+		return 0, ErrBatchCASFail
+	}
+
+	// 批量写入数据到队列
+	for i := 0; i < available; i++ {
+		slot := &q.data[(tail+uint64(i))&mask]
+		val := vals[i]
+		if val == nil {
+			val = efaceNilVal
+		}
+		tmp := (*eface)(unsafe.Pointer(&val))
+		atomic.StorePointer(&slot.data, tmp.data)
+		atomic.StorePointer(&slot.typ, tmp.typ)
+	}
+	return available, nil
+}
+
 // BatchPop 是一个从无锁队列中批量弹出元素的方法
 // 它接收一个整数参数 count，表示希望弹出的元素数量
-// 返回一个包含最多 count 个元素的切片和实际弹出的元素数量
+// 返回实际弹出的元素数量元素的切片
 func (q *LockFree) BatchPop(count int) []any {
 	if count < 1 || q.notInit() {
 		return nil
 	}
-	tail := q.tail.Load()
-	head := q.head.Load()
-	if head == tail {
-		return nil // 队列为空。
+	size := q.Size()
+	if size < 1 {
+		return nil
+	}
+	if count > size {
+		count = size
 	}
 	result := make([]any, count)
 	actual := 0
@@ -316,140 +351,122 @@ func (q *LockFree) BatchPop(count int) []any {
 	return result
 }
 
+// Head 返回队列头部元素
 func (q *LockFree) Head() (any, bool) {
-	if q.notInit() {
-		return nil, false
-	}
-	tail := q.tail.Load()
-	head := q.head.Load()
-	mask := q.mask
-	if head == tail {
-		return nil, false // 队列为空。
-	}
-	slot := &q.data[head&mask]
-	if slot.typ == nil || slot.typ == efaceNilTyp {
-		return nil, false
-	}
-	tmp := eface{typ: slot.typ, data: slot.data}
-	return *(*any)(unsafe.Pointer(&tmp)), true
-}
-
-func (q *LockFree) Tail() (any, bool) {
-	if q.notInit() {
-		return nil, false
-	}
-	tail := q.tail.Load()
-	head := q.head.Load()
-	mask := q.mask
-	if head == tail {
-		return nil, false // 队列为空。
-	}
-	// tail-1，前面push之后tail=tail+1增加了，这里的实际地址是tail-1
-	slot := &q.data[(tail-1)&mask]
-	if slot.typ == nil || slot.typ == efaceNilTyp {
-		return nil, false
-	}
-	tmp := eface{typ: slot.typ, data: slot.data}
-	return *(*any)(unsafe.Pointer(&tmp)), true
-}
-
-func (q *LockFree) All() []any {
-	if q.notInit() {
-		return nil
-	}
-	tail := q.tail.Load()
-	head := q.head.Load()
-	mask := q.mask
-	if head == tail {
-		return nil // 队列为空。
-	}
-	lq := int(tail - head)
-	result := make([]any, lq)
-	actual := 0
-	for i := 0; i < lq; i++ {
-		slot := &q.data[(head+uint64(i))&mask]
-		if slot.typ == nil || slot.typ == efaceNilTyp {
-			break
+	// if q.notInit() {
+	// 	return nil, false
+	// }
+	for {
+		tail := q.tail.Load()
+		head := q.head.Load()
+		mask := q.mask
+		if head == tail {
+			return nil, false // 队列为空。
 		}
-		tmp := eface{typ: slot.typ, data: slot.data}
-		val := *(*any)(unsafe.Pointer(&tmp))
-		result[actual] = val
+		slot := &q.data[head&mask]
+		typ := atomic.LoadPointer(&slot.typ)
+		data := atomic.LoadPointer(&slot.data)
+		if typ == nil {
+			runtime.Gosched()
+			continue
+		}
+		tmp := eface{typ: typ, data: data}
+		return *(*any)(unsafe.Pointer(&tmp)), true
 	}
-	return result[:actual]
 }
 
+// Head 返回队列尾部元素
+func (q *LockFree) Tail() (any, bool) {
+	// if q.notInit() {
+	// 	return nil, false
+	// }
+	for {
+		tail := q.tail.Load()
+		head := q.head.Load()
+		mask := q.mask
+		if head == tail {
+			return nil, false // 队列为空。
+		}
+		// tail-1，前面push之后tail=tail+1增加了，这里的实际地址是tail-1
+		slot := &q.data[(tail-1)&mask]
+		typ := atomic.LoadPointer(&slot.typ)
+		data := atomic.LoadPointer(&slot.data)
+		if typ == nil {
+			runtime.Gosched()
+			continue
+		}
+		tmp := eface{typ: typ, data: data}
+		return *(*any)(unsafe.Pointer(&tmp)), true
+	}
+}
+
+// Clean 清空队列
 func (q *LockFree) Clean() {
-	if q.notInit() {
-		return
-	}
-	tail := q.tail.Load()
-	head := q.head.Load()
-	mask := q.mask
-	if head == tail {
-		return // 队列为空。
-	}
-	lq := int(tail - head)
-	q.head.Store(tail)
-	for i := 0; i < lq; i++ {
-		slot := &q.data[(head+uint64(i))&mask]
-		atomic.StorePointer(&slot.data, nil)
-		atomic.StorePointer(&slot.typ, nil)
+	for {
+		tail := q.tail.Load()
+		head := q.head.Load()
+		mask := q.mask
+		if head == tail {
+			return // 队列为空。
+		}
+		size := int(tail - head)
+		if !q.head.CompareAndSwap(head, tail) {
+			continue
+		}
+		for i := 0; i < size; i++ {
+			slot := &q.data[(head+uint64(i))&mask]
+			atomic.StorePointer(&slot.data, nil)
+			atomic.StorePointer(&slot.typ, nil)
+		}
 	}
 }
 
-// func (q *LockFree) PopBetch1(count int) ([]any, int) {
-// 	if count < 1 {
-// 		return nil, 0
+// func (q *LockFree) PopBetch1(count int) []any {
+// 	if count < 1 || q.notInit() {
+// 		return nil
 // 	}
-// 	if q.data == nil {
-// 		return nil, 0
-// 	}
+
 // 	head := q.head.Load()
 // 	tail := q.tail.Load()
 
 // 	available := int(tail - head)
 // 	if available < 1 {
-// 		return nil, 0
+// 		return nil
 // 	}
 // 	if available > count {
 // 		available = count
 // 	}
+// 	mask := q.mask
+// 	for i := 0; i < available; i++ {
+// 		slot := &q.data[(head+uint64(i))&mask]
+// 		slotTyp := atomic.LoadPointer(&slot.typ)
+// 		if slotTyp == nil {
+// 			available = i
+// 			break
+// 		}
+// 	}
+// 	newHead := head + uint64(available)
+// 	if !q.head.CompareAndSwap(head, head+uint64(newHead)) {
+// 		return nil
+// 	}
 
-// 	// 尝试更新
 // 	result := make([]any, available)
 // 	actual := 0
-// 	mask := q.mask
-// 	success := true
-
 // 	for i := 0; i < available; i++ {
 // 		slot := &q.data[(head+uint64(i))&mask]
 // 		slotTyp := atomic.LoadPointer(&slot.typ)
 // 		slotData := atomic.LoadPointer(&slot.data)
-// 		if slotTyp == nil {
-// 			success = false
-// 			break
-// 		}
+// 		atomic.StorePointer(&slot.data, nil)
+// 		atomic.StorePointer(&slot.typ, nil)
 
 // 		tmp := eface{typ: slotTyp, data: slotData}
 // 		val := *(*any)(unsafe.Pointer(&tmp))
-// 		if slotTyp == queueNilTyp {
+// 		if val == efaceNilVal {
 // 			val = nil
 // 		}
 // 		result[i] = val
 // 		actual++
 // 	}
-// 	if !success {
-// 		result = result[:actual]
-// 	}
-// 	newHead := head + uint64(actual)
-// 	if !q.head.CompareAndSwap(head, newHead) {
-// 		return nil, 0
-// 	}
-// 	// 批量清理已读取的槽位
-// 	for i := 0; i < actual; i++ {
-// 		slot := &q.data[(head+uint64(i))&mask]
-// 		atomic.StorePointer(&slot.data, nil)
-// 		atomic.StorePointer(&slot.typ, nil)
-// 	}
-// 	return result, actual
+// 	result = result[:actual]
+// 	return result
 // }

@@ -18,7 +18,6 @@ type QueueOpt interface {
 	Tail() (value any, ok bool)
 	Full() bool
 	Empty() bool
-	All() []any
 	Clean()
 }
 
