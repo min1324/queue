@@ -32,34 +32,34 @@ type PriorityQueue struct {
 	data   []pNode
 }
 
-func (q *PriorityQueue) init(maxP07 int) {
-	if maxP07 < 1 || maxP07 > NumP {
-		maxP07 = NumP
+func (q *PriorityQueue) init(maxP int) {
+	if maxP < 1 || maxP > NumP {
+		maxP = NumP
 	}
 	q.data = make([]pNode, NumP+1)
-	q.maxCap = uint64(maxP07)
+	q.maxCap = uint64(maxP)
 }
-func (q *PriorityQueue) Init(maxP07 int) {
+func (q *PriorityQueue) Init(maxP int) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.data != nil {
 		return
 	}
-	q.init(maxP07)
+	q.init(maxP)
 }
 
-func (q *PriorityQueue) getNode(p07 Priority) *pNode {
-	if p07 > P7 {
-		p07 = P7
+func (q *PriorityQueue) getNode(p Priority) *pNode {
+	if p > P7 {
+		p = P7
 	}
-	return &q.data[p07]
+	return &q.data[p]
 }
 
-func (q *PriorityQueue) Push(p07 Priority, val any) bool {
+func (q *PriorityQueue) Push(p Priority, val any) bool {
 	if q.maxCap == 0 {
-		q.Init(int(p07))
+		q.Init(int(p))
 	}
-	ok := q.getNode(p07).Push(val)
+	ok := q.getNode(p).Push(val)
 	if ok {
 		atomic.AddUint64(&q.num, 1)
 	}
@@ -93,37 +93,48 @@ func (q *PriorityQueue) Head() (any, bool) {
 	return nil, false
 }
 
-func (q *PriorityQueue) Take(p07 Priority) []any {
-	if q.Empty() {
-		return nil
-	}
-	que := q.getNode(07)
-	if que.Empty() {
-		return nil
-	}
-	val := que.BatchPop(que.Size())
-	atomic.AddUint64(&q.num, ^uint64(uint64(len(val))))
-	return val
-}
-
-func (q *PriorityQueue) Slice(p07 Priority) []any {
-	if q.Empty() {
-		return nil
-	}
-	return q.getNode(p07).All()
-}
-
 func (q *PriorityQueue) Tail() (any, bool) {
 	if q.Empty() {
 		return nil, false
 	}
-	for i := q.maxCap; i > 0; i++ {
-		val, ok := q.data[i-1].Tail()
+	for i := int(q.maxCap) - 1; i > 0; i-- {
+		val, ok := q.data[i].Tail()
 		if ok {
 			return val, true
 		}
 	}
 	return nil, false
+}
+
+func (q *PriorityQueue) Take(p Priority) []any {
+	if q.Empty() {
+		return nil
+	}
+	que := q.getNode(p)
+	if que.Empty() {
+		return nil
+	}
+	val := que.BatchPop(que.Size())
+	atomic.AddUint64(&q.num, ^uint64(len(val)))
+	return val
+}
+
+func (q *PriorityQueue) Slice(p Priority) []any {
+	if q.Empty() {
+		return nil
+	}
+	return q.getNode(p).All()
+}
+
+func (q *PriorityQueue) All() []any {
+	if q.Empty() {
+		return nil
+	}
+	var result []any
+	for i := 0; i < int(q.maxCap); i++ {
+		result = append(result, q.data[i].All()...)
+	}
+	return result
 }
 
 func (q *PriorityQueue) Size() int {
