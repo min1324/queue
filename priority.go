@@ -17,8 +17,8 @@ const (
 	P4
 	P5
 	P6
-	P7              // 最低优先级
-	NumP = 1<<3 - 1 // 优先级数量
+	P7            // 最低优先级
+	NumP = 1 << 3 // 优先级数量
 )
 
 type pNode struct {
@@ -36,7 +36,7 @@ func (q *PriorityQueue) init(maxP int) {
 	if maxP < 1 || maxP > NumP {
 		maxP = NumP
 	}
-	q.data = make([]pNode, NumP+1)
+	q.data = make([]pNode, maxP)
 	q.maxCap = uint64(maxP)
 }
 func (q *PriorityQueue) Init(maxP int) {
@@ -66,7 +66,41 @@ func (q *PriorityQueue) Push(p Priority, val any) bool {
 	return ok
 }
 
-func (q *PriorityQueue) Pop() (any, bool) {
+func (q *PriorityQueue) BatchPush(p Priority, val ...any) (int, error) {
+	if q.maxCap == 0 {
+		q.Init(int(p))
+	}
+	n, err := q.getNode(p).BatchPush(val...)
+	if n > 0 {
+		atomic.AddUint64(&q.num, uint64(n))
+	}
+	return n, err
+}
+
+func (q *PriorityQueue) Pop(p Priority) (any, bool) {
+	if q.Empty() {
+		return nil, false
+	}
+	val, ok := q.getNode(p).Pop()
+	if ok {
+		atomic.AddUint64(&q.num, ^uint64(0))
+		return val, true
+	}
+	return nil, false
+}
+
+func (q *PriorityQueue) BatchPop(p Priority, count int) []any {
+	if q.Empty() {
+		return nil
+	}
+	vals := q.getNode(p).BatchPop(count)
+	if len(vals) > 0 {
+		atomic.AddUint64(&q.num, ^uint64(len(vals)))
+	}
+	return vals
+}
+
+func (q *PriorityQueue) PopHead() (any, bool) {
 	if q.Empty() {
 		return nil, false
 	}
@@ -117,6 +151,19 @@ func (q *PriorityQueue) Take(p Priority) []any {
 	val := que.BatchPop(que.Size())
 	atomic.AddUint64(&q.num, ^uint64(len(val)))
 	return val
+}
+
+func (q *PriorityQueue) TakeAll() []any {
+	if q.Empty() {
+		return nil
+	}
+	var result []any
+	for i := 0; i < int(q.maxCap); i++ {
+		que := &q.data[i]
+		result = append(result, que.BatchPop(que.Cap())...)
+	}
+	atomic.AddUint64(&q.num, ^uint64(len(result)))
+	return result
 }
 
 func (q *PriorityQueue) Slice(p Priority) []any {
