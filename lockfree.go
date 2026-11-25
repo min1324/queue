@@ -31,10 +31,11 @@ func newEface(val any) *eface {
 	return (*eface)(unsafe.Pointer(&val))
 }
 
+// keep typ!=nil
 func newAny(typ, data unsafe.Pointer) any {
 	tmp := eface{typ: typ, data: data}
 	val := *(*any)(unsafe.Pointer(&tmp))
-	if val == efaceNilVal {
+	if typ == efaceNilTyp {
 		val = nil
 	}
 	return val
@@ -44,6 +45,7 @@ type efaceNil struct{}
 
 var (
 	efaceNilVal any = (*efaceNil)(nil)
+	efaceNilTyp     = (*eface)(unsafe.Pointer(&efaceNilVal)).typ
 )
 
 func init() {
@@ -283,7 +285,7 @@ func (q *LockFree) BatchPush(vals ...any) (int, error) {
 	return available, nil
 }
 
-// PushAll 批量推入方，推入所有vals
+// PushAll 全量入队，推入所有vals
 func (q *LockFree) PushAll(vals ...any) (int, error) {
 	if len(vals) < 1 {
 		return 0, nil
@@ -420,7 +422,9 @@ func (q *LockFree) Clean() {
 	}
 }
 
-func (q *LockFree) ALL() []any {
+// All 返回队列所有元素，
+// 如果并发写入未完成则不返回
+func (q *LockFree) All() []any {
 	tail := q.tail.Load()
 	head := q.head.Load()
 	mask := q.mask
@@ -439,15 +443,14 @@ func (q *LockFree) ALL() []any {
 			// 并发写入未完成，终止
 			break
 		}
-		val := newAny(typ, data)
-		result = append(result, val)
+		result[actual] = newAny(typ, data)
 		actual++
 	}
 	result = result[:actual]
 	return result
 }
 
-// func (q *LockFree) PopBetch1(count int) []any {
+// func (q *LockFree) BatchPop(count int) []any {
 // 	if count < 1 || q.notInit() {
 // 		return nil
 // 	}
@@ -472,7 +475,7 @@ func (q *LockFree) ALL() []any {
 // 		}
 // 	}
 // 	newHead := head + uint64(available)
-// 	if !q.head.CompareAndSwap(head, head+uint64(newHead)) {
+// 	if !q.head.CompareAndSwap(head, newHead) {
 // 		return nil
 // 	}
 

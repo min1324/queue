@@ -35,7 +35,7 @@ func (q *MuxAuto) initInLock(cap int) {
 		cap = DefaultCap
 	}
 	if uint64(cap) > MaxCap {
-		panic("MuxAuto: queue capacity overflow")
+		panic("MuxAuto: queue capacity overflow MaxCap")
 	}
 	q.mask = upPow2(uint64(cap))
 	q.cap = uint64(cap)
@@ -77,7 +77,7 @@ func (q *MuxAuto) SetOpt(auto bool) {
 }
 
 func (q *MuxAuto) Push(val any) bool {
-	if q.Full() && q.cap > 0 {
+	if q.Full() && !q.auto && q.cap > 0 {
 		return false
 	}
 	q.inMux.Lock()
@@ -91,8 +91,6 @@ func (q *MuxAuto) Push(val any) bool {
 		// grow
 		if q.auto {
 			q.growWorkInLock(1)
-			tail = q.tail.Load()
-			head = q.head.Load()
 		}
 		if tail-head >= q.cap {
 			// grow failed
@@ -105,6 +103,7 @@ func (q *MuxAuto) Push(val any) bool {
 	return true
 }
 
+// 扩容，必须在锁内进行，扩容后更新mask,cap值
 func (s *MuxAuto) growWorkInLock(delta uint64) {
 	const incGrow = 1 << 15
 	curCap := s.cap
@@ -131,10 +130,10 @@ func (s *MuxAuto) growWorkInLock(delta uint64) {
 	}
 	newData := make([]entry, newMask+1)
 	head, tail := s.head.Load(), s.tail.Load()
-	lenData := tail - head + s.cap
 	mask := s.mask
-	for i := uint64(0); i < lenData; i++ {
-		newData[i&newMask] = s.data[(i+head)&mask]
+	// 从head开始，保持一致性
+	for i := head; i < tail; i++ {
+		newData[i&newMask] = s.data[i&mask]
 	}
 	s.data = newData
 	s.mask = newMask
@@ -185,6 +184,7 @@ func (s *MuxAuto) shrinkWorkInLock() {
 	newData := make([]entry, newMask+1)
 	head, tail := s.head.Load(), s.tail.Load()
 	mask := s.mask
+	// 从head开始，保持一致性
 	for i := head; i < tail; i++ {
 		newData[i&newMask] = s.data[i&mask]
 	}
@@ -226,7 +226,7 @@ func (q *MuxAuto) Head() (val any, ok bool) {
 }
 
 func (q *MuxAuto) BatchPush(val ...any) (int, error) {
-	if len(val) == 0 {
+	if len(val) < 1 || (q.Full() && !q.auto && q.cap > 0) {
 		return 0, nil
 	}
 	q.inMux.Lock()
@@ -237,24 +237,20 @@ func (q *MuxAuto) BatchPush(val ...any) (int, error) {
 
 	tail := q.tail.Load()
 	head := q.head.Load()
-	mask := q.mask
+
 	availbale := int(q.cap - (tail - head))
-	if availbale < 0 {
+	if availbale < len(val) {
 		// grow
 		if q.auto {
 			q.growWorkInLock(uint64(len(val)))
-			tail = q.tail.Load()
-			head = q.head.Load()
 			availbale = int(q.cap - (tail - head))
 		}
-		if availbale < 0 {
+		if availbale < len(val) {
 			return 0, ErrMuxRingFull
 		}
 	}
-	if availbale > len(val) {
-		availbale = len(val)
-	}
-
+	availbale = len(val)
+	mask := q.mask
 	for i := 0; i < availbale; i++ {
 		slot := &q.data[(tail+uint64(i))&mask]
 		slot.store(val[i])
@@ -271,7 +267,6 @@ func (q *MuxAuto) BatchPop(count int) []any {
 	defer q.outMux.Unlock()
 	tail := q.tail.Load()
 	head := q.head.Load()
-	mask := q.mask
 	availbale := int(tail - head)
 	if availbale < 1 {
 		return nil
@@ -281,7 +276,7 @@ func (q *MuxAuto) BatchPop(count int) []any {
 	}
 	actual := 0
 	result := make([]any, availbale)
-
+	mask := q.mask
 	for i := 0; i < availbale; i++ {
 		slot := &q.data[(head+uint64(i))&mask]
 		v, ok := slot.load()

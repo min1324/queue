@@ -207,37 +207,16 @@ func bMultiProducerConsumer(b *testing.B, q Interface) {
 }
 
 // 性能测试：测量批量操作的吞吐量
-func BenchmarkPushBatch_LockFree(b *testing.B) {
-	bPushBatch(b, &queue.LockFree{})
-}
-func BenchmarkPushBatch_MuxRing(b *testing.B) {
-	bPushBatch(b, &queue.MuxRing{})
-}
-
-func bPushBatch(b *testing.B, q Interface) {
-	batchSize := 100
-	var queueSize = batchSize * b.N
-	q.Init(queueSize)
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		vals := make([]any, batchSize)
-		for j := 0; j < batchSize; j++ {
-			vals[j] = i*batchSize + j
-		}
-		q.BatchPush(vals...)
-	}
-}
 func BenchmarkPopBatch_LockFree(b *testing.B) {
-	bPopBatch(b, &queue.LockFree{})
+	bBatch(b, &queue.LockFree{})
 }
 func BenchmarkPopBatch_MuxRing(b *testing.B) {
-	bPopBatch(b, &queue.MuxRing{})
+	bBatch(b, &queue.MuxRing{})
 }
 
-func bPopBatch(b *testing.B, q Interface) {
+func bBatch(b *testing.B, q Interface) {
 	batchSize := 100
-	var queueSize = 100 * b.N
+	var queueSize = 100 * 100
 	q.Init(queueSize)
 
 	// 预填充数据
@@ -245,25 +224,25 @@ func bPopBatch(b *testing.B, q Interface) {
 	for i := 0; i < queueSize; i++ {
 		vals[i] = i
 	}
-	q.BatchPush(vals...)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		q.BatchPush(vals...)
 		q.BatchPop(batchSize)
 	}
 }
 
-func BenchmarkPushPopBatchConcurrent_LockFree(b *testing.B) {
-	bPushPopBatchConcurrent(b, &queue.LockFree{})
+func BenchmarkBatchConcurrent_LockFree(b *testing.B) {
+	bBatchConcurrent(b, &queue.LockFree{})
 }
-func BenchmarkPushPopBatchConcurrent_MuxRing(b *testing.B) {
-	bPushPopBatchConcurrent(b, &queue.MuxRing{})
+func BenchmarkBatchConcurrent_MuxRing(b *testing.B) {
+	bBatchConcurrent(b, &queue.MuxRing{})
 }
 
-func bPushPopBatchConcurrent(b *testing.B, q Interface) {
+func bBatchConcurrent(b *testing.B, q Interface) {
 	var (
-		queueSize = 1000
-		batchSize = 10
+		queueSize = 1 << 20
+		batchSize = 1 << 10
 	)
 
 	q.Init(queueSize)
@@ -289,30 +268,21 @@ func bPushPopBatchConcurrent(b *testing.B, q Interface) {
 
 // BenchmarkClean 测试 Clean 方法的性能
 func BenchmarkClean_LockFree(b *testing.B) {
-	q := &queue.LockFree{}
-	q.Init(1000)
-
-	// 预填充数据
-	for i := 0; i < 1000; i++ {
-		q.Push(i)
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		q.Clean()
-		// 重新填充数据
-		for j := 0; j < 1000; j++ {
-			q.Push(j)
-		}
-	}
+	bClean(b, &queue.LockFree{})
 }
 
 func BenchmarkClean_MuxRing(b *testing.B) {
-	q := &queue.MuxRing{}
-	q.Init(1000)
+	bClean(b, &queue.MuxRing{})
+}
+
+func bClean(b *testing.B, q Interface) {
+	var (
+		queueSize = 1 << 10
+	)
+	q.Init(queueSize)
 
 	// 预填充数据
-	for i := 0; i < 1000; i++ {
+	for i := 0; i < queueSize; i++ {
 		q.Push(i)
 	}
 
@@ -320,29 +290,47 @@ func BenchmarkClean_MuxRing(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		q.Clean()
 		// 重新填充数据
-		for j := 0; j < 1000; j++ {
+		for j := 0; j < queueSize; j++ {
 			q.Push(j)
 		}
 	}
 }
 
-// BenchmarkCleanEmpty 测试关闭空队列的性能
-func BenchmarkCleanEmpty_LockFree(b *testing.B) {
-	q := &queue.LockFree{}
-	q.Init(shortTestCap)
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		q.Clean()
-	}
+func BenchmarkHead_LockFree(b *testing.B) {
+	bHead(b, &queue.LockFree{})
 }
 
-func BenchmarkCleanEmpty_MuxRing(b *testing.B) {
-	q := &queue.MuxRing{}
-	q.Init(shortTestCap)
+func BenchmarkHead_MuxAuto(b *testing.B) {
+	bHead(b, &queue.MuxAuto{})
+}
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		q.Clean()
-	}
+func bHead(b *testing.B, q Interface) {
+
+	q.Init(shortTestCap)
+	q.Push(2)
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			_, _ = q.Head()
+		}
+	})
+}
+
+func BenchmarkTail_LockFree(b *testing.B) {
+	bTail(b, &queue.LockFree{})
+}
+
+func BenchmarkTail_MuxRing(b *testing.B) {
+	bTail(b, &queue.MuxRing{})
+}
+
+func bTail(b *testing.B, q Interface) {
+	q.Init(shortTestCap)
+	q.Push(2)
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			_, _ = q.Tail()
+		}
+	})
 }

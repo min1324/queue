@@ -6,7 +6,7 @@ const (
 	DefaultCap = 1 << 8 // 256
 
 	// MaxCap 是队列的最大容量。
-	MaxCap = 1<<30 - 1 // ^uint64(0) >> 2
+	MaxCap = 1<<32 - 1 // ^uint64(0) >> 2
 )
 
 type QueueOpt interface {
@@ -19,6 +19,7 @@ type QueueOpt interface {
 	Full() bool
 	Empty() bool
 	Clean()
+	All() []any
 }
 
 // Queue 定义了带有容量管理的无锁队列接口。

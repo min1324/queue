@@ -85,7 +85,7 @@ func (q *MuxRing) Push(val any) bool {
 	}
 	tail := q.tail.Load()
 	head := q.head.Load()
-	if tail-head == q.cap {
+	if tail-head >= q.cap {
 		return false
 	}
 	slot := &q.data[tail&q.mask]
@@ -146,7 +146,7 @@ func (q *MuxRing) Head() (val any, ok bool) {
 }
 
 func (q *MuxRing) BatchPush(val ...any) (int, error) {
-	if len(val) == 0 {
+	if len(val) < 1 {
 		return 0, nil
 	}
 	q.inMux.Lock()
@@ -157,7 +157,7 @@ func (q *MuxRing) BatchPush(val ...any) (int, error) {
 
 	tail := q.tail.Load()
 	head := q.head.Load()
-	mask := q.mask
+
 	availbale := int(q.cap - (tail - head))
 	if availbale < 0 {
 		return 0, ErrMuxRingFull
@@ -165,7 +165,7 @@ func (q *MuxRing) BatchPush(val ...any) (int, error) {
 	if availbale > len(val) {
 		availbale = len(val)
 	}
-
+	mask := q.mask
 	for i := 0; i < availbale; i++ {
 		slot := &q.data[(tail+uint64(i))&mask]
 		slot.store(val[i])
@@ -182,7 +182,6 @@ func (q *MuxRing) BatchPop(count int) []any {
 	defer q.outMux.Unlock()
 	tail := q.tail.Load()
 	head := q.head.Load()
-	mask := q.mask
 	availbale := int(tail - head)
 	if availbale < 1 {
 		return nil
@@ -192,7 +191,7 @@ func (q *MuxRing) BatchPop(count int) []any {
 	}
 	actual := 0
 	result := make([]any, availbale)
-
+	mask := q.mask
 	for i := 0; i < availbale; i++ {
 		slot := &q.data[(head+uint64(i))&mask]
 		v, ok := slot.load()

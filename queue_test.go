@@ -14,9 +14,8 @@ import (
 func perQueue(t *testing.T, f func(t *testing.T, q Interface)) {
 	var arrQueue = [...]Interface{
 		&queue.MuxRing{},
-		// &queue.LockFree{},
-		// &queue.SPSC{},
-		// &queue.LockQueue{},
+		// &queue.MuxAuto{},
+		&queue.LockFree{},
 	}
 
 	for _, q := range arrQueue {
@@ -148,6 +147,13 @@ func TestQueueNilValue(t *testing.T) {
 		if _, ok := q.Pop(); ok {
 			t.Fatal("Pop() succeeded after nil value was removed")
 		}
+		if !q.Push(0) {
+			t.Fatal("Push(0) failed")
+		}
+		got, ok = q.Pop()
+		if !ok || got != 0 {
+			t.Fatalf("Pop() after Push(0) = (%v, %v), want (0, true)", got, ok)
+		}
 	})
 }
 
@@ -190,7 +196,7 @@ func TestConcurrentPushPop_LockFree(t *testing.T) {
 	tConcurrentPushPop(t, &queue.LockFree{})
 }
 
-func TestConcurrentPushPop_DRQueue(t *testing.T) {
+func TestConcurrentPushPop_MuxRing(t *testing.T) {
 	tConcurrentPushPop(t, &queue.MuxRing{})
 }
 
@@ -318,7 +324,7 @@ func TestPushPopBatch_LockFree(t *testing.T) {
 	tPushPopBatch(t, &queue.LockFree{})
 }
 
-func TestPushPopBatch_DRQueue(t *testing.T) {
+func TestPushPopBatch_MuxRing(t *testing.T) {
 	tPushPopBatch(t, &queue.MuxRing{})
 }
 
@@ -427,7 +433,7 @@ func TestPushPopBatchConcurrent_LockFree(t *testing.T) {
 	pushPopBatchConcurrent(t, &queue.LockFree{})
 }
 
-func TestPushPopBatchConcurrent_DRQueue(t *testing.T) {
+func TestPushPopBatchConcurrent_MuxRing(t *testing.T) {
 	pushPopBatchConcurrent(t, &queue.MuxRing{})
 }
 
@@ -521,4 +527,186 @@ func pushPopBatchConcurrent(t *testing.T, q Interface) {
 		}
 		return true
 	})
+}
+
+func TestHeadTail_LockFree(t *testing.T) {
+	headTail(t, &queue.LockFree{})
+}
+
+func TestHeadTail_MuxRing(t *testing.T) {
+	headTail(t, &queue.MuxRing{})
+}
+
+func TestHeadTail_MuxAuto(t *testing.T) {
+	headTail(t, &queue.MuxAuto{})
+}
+
+func headTail(t *testing.T, q Interface) {
+	v, ok := q.Head()
+	if ok {
+		t.Fatalf("init head have val:%v", v)
+	}
+	var slice = []int{1, 2, 3, 4, 5, 6}
+	for _, v := range slice {
+		q.Push(v)
+	}
+	v, ok = q.Head()
+	if !ok || v != 1 {
+		t.Fatalf("Head is 1, got %v,ok:%v", v, ok)
+	}
+	v, ok = q.Tail()
+	if !ok || v != 6 {
+		t.Fatalf("tail is 6,got %v", v)
+	}
+
+	q.Pop()
+	v, ok = q.Head()
+	if !ok || v != 2 {
+		t.Fatalf("head is 2,got %v", v)
+	}
+	v, ok = q.Tail()
+	if !ok || v != 6 {
+		t.Fatalf("tail is 6,got %v", v)
+	}
+	q.Clean()
+	v, ok = q.Head()
+	if ok {
+		t.Fatalf("Head queue is empty,got %v", v)
+	}
+	v, ok = q.Tail()
+	if ok {
+		t.Fatalf("Tail queue is empty,got %v", v)
+	}
+}
+
+func TestGrowShrink(t *testing.T) {
+	q := queue.MuxAuto{}
+	q.Init(10)
+	for i := 0; i < 1<<8; i++ {
+		ok := q.Push(i)
+		if !ok {
+			t.Fatalf("grow fail %d,cap:%d,size:%d", i, q.Cap(), q.Size())
+		}
+	}
+	for i := 1 << 8; i < 1<<20; i++ {
+		ok := q.Push(i)
+		if !ok {
+			t.Fatalf("grow fail %d,cap:%d,size:%d", i, q.Cap(), q.Size())
+		}
+	}
+	result := make([]any, 1<<20)
+	curCap, curSize := q.Cap(), q.Size()
+	for i := 0; i < 1<<20; i++ {
+		v, ok := q.Pop()
+		if !ok {
+			break
+		}
+		result[i] = v
+	}
+	newCap, newSize := q.Cap(), q.Size()
+	if newCap == curCap || curSize == newSize {
+		t.Fatalf("shrink failed after pop 1<<20")
+	}
+	for i := 0; i < 1<<20; i++ {
+		if result[i] != i {
+			t.Fatalf("after grow pop err,got %v,want %v", result[i], i)
+		}
+	}
+}
+
+func TestBatchGrowShrink(t *testing.T) {
+	q := queue.MuxAuto{}
+	q.Init(10)
+	size := 1 << 20
+	vals := make([]any, size)
+	for i := 0; i < size; i++ {
+		vals[i] = i
+	}
+	n, err := q.BatchPush(vals...)
+	if n != size || err != nil {
+		t.Fatalf("BatchPush grow fail size %d,len %d,n %d,err:%v", size, len(vals), n, err)
+	}
+	curCap, curSize := q.Cap(), q.Size()
+	result := q.BatchPop(size)
+	if len(result) != size {
+		t.Fatalf("BatchPop err got %d want %d", len(result), size)
+	}
+	for i := 0; i < size; i++ {
+		if result[i] != vals[i] {
+			t.Fatalf("BatchPop err in %v,got %v,want %v\n", i, result[i], vals[i])
+		}
+	}
+	newCap, newSize := q.Cap(), q.Size()
+	if newCap == curCap || curSize == newSize {
+		t.Fatalf("shrink failed after pop 1<<20")
+	}
+}
+
+func TestAll_LockFree(t *testing.T) {
+	tAll(t, &queue.LockFree{})
+}
+
+func TestAll_MuxRing(t *testing.T) {
+	tAll(t, &queue.MuxRing{})
+}
+
+func TestAll_MuxAuto(t *testing.T) {
+	tAll(t, &queue.MuxAuto{})
+}
+
+func tAll(t *testing.T, q Interface) {
+	var queuesize = 1 << 20
+	q.Init(queuesize)
+	vals := make([]int, queuesize)
+	for i := 0; i < queuesize; i++ {
+		vals[i] = i
+		q.Push(i)
+	}
+	result := q.All()
+	if len(result) != len(vals) {
+		t.Fatalf("all err len(vals)=%v,len(result)=%v", len(vals), len(result))
+	}
+	for i := 0; i < queuesize; i++ {
+		if vals[i] != result[i] {
+			t.Fatalf("All err in %v,got %v,want %v\n", i, result[i], vals[i])
+		}
+	}
+}
+
+func TestPushAll(t *testing.T) {
+	const queueCap = 8
+	var q queue.LockFree
+	q.Init(queueCap)
+
+	// 测试1: 基本批量推送和弹出
+	testData := []any{1, 2, 3, 4, 5}
+	pushed, err := q.PushAll(testData...)
+	if pushed != len(testData) || err != nil {
+		t.Errorf("测试1: Expected to push %d items, but pushed %d,err:%v", len(testData), pushed, err)
+	}
+
+	testData = []any{6, 7, 8, 9, 10}
+	pushed, err = q.PushAll(testData...)
+	if pushed > 0 || err == nil {
+		t.Errorf("测试1: Expected to push 0 items, but pushed %d,err:%v", pushed, err)
+	}
+	testData = []any{6, 7, 8}
+	pushed, err = q.PushAll(testData...)
+	if pushed != len(testData) || err != nil {
+		t.Errorf("测试1: Expected to push %d items, but pushed %d,err:%v", len(testData), pushed, err)
+	}
+
+	// 批量弹出
+	popped := q.BatchPop(10)
+	actual := len(popped)
+	if actual != 8 {
+		t.Errorf("测试1: Expected to pop 8 items, but popped %d", actual)
+	}
+
+	// 验证数据一致性
+	for i := 0; i < 8; i++ {
+		if popped[i] != i+1 {
+			t.Errorf("测试1: Expected %v, got %v", i+1, popped[i])
+		}
+	}
 }
