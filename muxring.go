@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 )
 
-var ErrMuxRingFull error = errors.New("MuxRing: queue full")
+var errMuxRingFull error = errors.New("MuxRing: queue full")
 
 // 双锁环形队列，可以并发Push和Pop
 type MuxRing struct {
@@ -160,7 +160,7 @@ func (q *MuxRing) BatchPush(val ...any) (int, error) {
 
 	availbale := int(q.cap - (tail - head))
 	if availbale < 0 {
-		return 0, ErrMuxRingFull
+		return 0, errMuxRingFull
 	}
 	if availbale > len(val) {
 		availbale = len(val)

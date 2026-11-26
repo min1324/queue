@@ -14,8 +14,8 @@ const (
 	maxCap        = MaxCap     // LockFree 最大容量
 )
 
-var ErrLockFreeFull error = errors.New("LockFree: queue full")
-var ErrBatchCASFail error = errors.New("LockFree: concurrent batch CAS failed")
+var errLockFreeFull error = errors.New("LockFree: queue full")
+var errBatchCASFail error = errors.New("LockFree: concurrent batch CAS failed")
 
 // ------------------------ eface ------------------------
 
@@ -253,7 +253,7 @@ func (q *LockFree) BatchPush(vals ...any) (int, error) {
 	// 计算队列中可用的槽位数
 	available := int(q.cap - (tail - head))
 	if available < 1 {
-		return 0, ErrLockFreeFull // 队列已满。
+		return 0, errLockFreeFull // 队列已满。
 	}
 	if available > len(vals) {
 		available = len(vals)
@@ -272,7 +272,7 @@ func (q *LockFree) BatchPush(vals ...any) (int, error) {
 	// 尝试更新队列尾部位置
 	newTail := tail + uint64(available)
 	if !q.tail.CompareAndSwap(tail, newTail) {
-		return 0, ErrBatchCASFail
+		return 0, errBatchCASFail
 	}
 
 	// 批量写入数据到队列
@@ -297,7 +297,7 @@ func (q *LockFree) PushAll(vals ...any) (int, error) {
 	// 计算队列中可用的槽位数
 	available := int(q.cap - (tail - head))
 	if available < 1 || available < len(vals) {
-		return 0, ErrLockFreeFull // 队列已满。
+		return 0, errLockFreeFull // 队列已满。
 	}
 	available = len(vals)
 
@@ -306,14 +306,14 @@ func (q *LockFree) PushAll(vals ...any) (int, error) {
 	for i := 0; i < available; i++ {
 		slot := &q.data[(tail+uint64(i))&mask]
 		if atomic.LoadPointer(&slot.typ) != nil {
-			return 0, ErrLockFreeFull
+			return 0, errLockFreeFull
 		}
 	}
 
 	// 尝试更新队列尾部位置
 	newTail := tail + uint64(available)
 	if !q.tail.CompareAndSwap(tail, newTail) {
-		return 0, ErrBatchCASFail
+		return 0, errBatchCASFail
 	}
 
 	// 批量写入数据到队列

@@ -1,9 +1,12 @@
 package queue
 
 import (
+	"errors"
 	"sync"
 	"sync/atomic"
 )
+
+var errMuxAutoFull error = errors.New("MuxRing: queue full")
 
 // 双锁环形队列，可以并发Push和Pop
 // 自动扩容缩容
@@ -246,7 +249,7 @@ func (q *MuxAuto) BatchPush(val ...any) (int, error) {
 			availbale = int(q.cap - (tail - head))
 		}
 		if availbale < len(val) {
-			return 0, ErrMuxRingFull
+			return 0, errMuxAutoFull
 		}
 	}
 	availbale = len(val)
