@@ -8,83 +8,8 @@ import (
 	"unsafe"
 )
 
-const (
-	cacheLineSize = 64
-	defaultCap    = DefaultCap // LockFree 默认容量
-	maxCap        = MaxCap     // LockFree 最大容量
-)
-
 var errLockFreeFull error = errors.New("LockFree: queue full")
 var errBatchCASFail error = errors.New("LockFree: concurrent batch CAS failed")
-
-// ------------------------ eface ------------------------
-
-// eface 映射了空接口的运行时内部表示。
-type eface struct {
-	typ, data unsafe.Pointer
-}
-
-func newEface(val any) *eface {
-	if val == nil {
-		val = efaceNilVal
-	}
-	return (*eface)(unsafe.Pointer(&val))
-}
-
-// keep typ!=nil
-func newAny(typ, data unsafe.Pointer) any {
-	tmp := eface{typ: typ, data: data}
-	val := *(*any)(unsafe.Pointer(&tmp))
-	if typ == efaceNilTyp {
-		val = nil
-	}
-	return val
-}
-
-type efaceNil struct{}
-
-var (
-	efaceNilVal any = (*efaceNil)(nil)
-	efaceNilTyp     = (*eface)(unsafe.Pointer(&efaceNilVal)).typ
-)
-
-func init() {
-	verifyEfaceLayout()
-}
-
-// verifyEfaceLayout 检查 eface 结构体是否与运行时匹配。
-func verifyEfaceLayout() {
-	var val any = int(42)
-	ep := (*eface)(unsafe.Pointer(&val))
-	if ep.typ == nil || ep.data == nil {
-		panic("queue: eface layout does not match runtime interface layout")
-	}
-	var nilVal any
-	nilEp := (*eface)(unsafe.Pointer(&nilVal))
-	if nilEp.typ != nil || nilEp.data != nil {
-		panic("queue: eface layout does not match runtime nil interface layout")
-	}
-}
-
-// kfifo 返回 2^n-1，其中 2^n >= u，用于环形缓冲区的取模计算。
-// 此位操作技术将值向上取整到下一个2的幂次减1，
-// 使得可以通过按位与运算代替除法来实现高效的取模操作。
-// kfifo(128) =127, kfifo(129) = 255。
-// 如果 u 为 0 则返回 0，以避免下溢。
-// 另见：Linux 内核 kfifo 实现。
-func kfifo(u uint64) uint64 {
-	if u == 0 {
-		return 0
-	}
-	u -= 1 // 调整0值：确保最小结果
-	u |= u >> 1
-	u |= u >> 2
-	u |= u >> 4
-	u |= u >> 8
-	u |= u >> 16
-	u |= u >> 32 // 处理64位类型的高32位
-	return u
-}
 
 // ------------------------ LockFree ------------------------
 
@@ -115,7 +40,7 @@ type LockFree struct {
 	data []eface
 }
 
-func New() QueueOpt {
+func New() *LockFree {
 	return &LockFree{}
 }
 
@@ -131,10 +56,10 @@ func (q *LockFree) notInit() bool {
 func (q *LockFree) lazyInit(cap int) {
 	q.once.Do(func() {
 		if cap < 1 {
-			cap = defaultCap
+			cap = DefaultCap
 		}
-		if uint64(cap) > maxCap {
-			panic("queue: capacity overflow")
+		if cap > MaxCap {
+			cap = MaxCap
 		}
 		mask := kfifo(uint64(cap))
 
@@ -173,15 +98,8 @@ func (q *LockFree) Full() bool {
 }
 
 // Push 是一个无锁队列的入队方法
-// 参数:
-//
-//	val - 要入队的任意类型值
-//
-// 返回值:
-//
-//	bool - 成功入队返回true，队列已满返回false
 func (q *LockFree) Push(val any) bool {
-	q.lazyInit(defaultCap)
+	q.lazyInit(0)
 
 	tmp := newEface(val)
 	for {
@@ -210,8 +128,6 @@ func (q *LockFree) Push(val any) bool {
 
 // Pop 是一个无锁队列的出队操作方法
 // 它从队列中取出一个元素，如果队列为空则返回 (nil, false)
-// 参数: 无
-// 返回值: (any, bool) - 取出的元素和是否成功取出的标志
 func (q *LockFree) Pop() (any, bool) {
 	for {
 		tail := q.tail.Load()
@@ -246,7 +162,7 @@ func (q *LockFree) BatchPush(vals ...any) (int, error) {
 	if len(vals) < 1 {
 		return 0, nil
 	}
-	q.lazyInit(defaultCap)
+	q.lazyInit(0)
 
 	tail := q.tail.Load()
 	head := q.head.Load()
@@ -290,7 +206,7 @@ func (q *LockFree) PushAll(vals ...any) (int, error) {
 	if len(vals) < 1 {
 		return 0, nil
 	}
-	q.lazyInit(defaultCap)
+	q.lazyInit(0)
 
 	tail := q.tail.Load()
 	head := q.head.Load()
@@ -325,35 +241,6 @@ func (q *LockFree) PushAll(vals ...any) (int, error) {
 	}
 	return available, nil
 }
-
-// // BatchPop 是一个从无锁队列中批量弹出元素的方法
-// // 它接收一个整数参数 count，表示希望弹出的元素数量
-// // 返回实际弹出的元素数量元素的切片
-// func (q *LockFree) BatchPop(count int) []any {
-// 	if count < 1 || q.notInit() {
-// 		return nil
-// 	}
-// 	size := q.Size()
-// 	if size < 1 {
-// 		return nil
-// 	}
-// 	if count > size {
-// 		count = size
-// 	}
-// 	result := make([]any, count)
-// 	actual := 0
-// 	for i := 0; i < count; i++ {
-// 		val, ok := q.Pop()
-// 		if !ok {
-// 			break
-// 		}
-// 		result[actual] = val
-// 		actual++
-// 	}
-// 	// 调整结果切片大小，只包含实际获取的元素
-// 	result = result[:actual]
-// 	return result
-// }
 
 // BatchPop 是一个从无锁队列中批量弹出元素的方法
 // 它接收一个整数参数 count，表示希望弹出的元素数量
@@ -417,15 +304,16 @@ func (q *LockFree) Head() (any, bool) {
 			continue
 		}
 		val := newAny(typ, data)
+		newHead := q.head.Load()
+		if newHead != head {
+			continue
+		}
 		return val, true
 	}
 }
 
 // Head 返回队列尾部元素
 func (q *LockFree) Tail() (any, bool) {
-	// if q.notInit() {
-	// 	return nil, false
-	// }
 	for {
 		tail := q.tail.Load()
 		head := q.head.Load()
@@ -442,6 +330,10 @@ func (q *LockFree) Tail() (any, bool) {
 			continue
 		}
 		val := newAny(typ, data)
+		newTail := q.tail.Load()
+		if newTail != tail {
+			continue
+		}
 		return val, true
 	}
 }
@@ -467,30 +359,37 @@ func (q *LockFree) Clean() {
 	}
 }
 
-// All 返回队列所有元素，
-// 如果并发写入未完成则不返回
+// All 返回队列所有元素，并发读写影响性能
 func (q *LockFree) All() []any {
-	tail := q.tail.Load()
-	head := q.head.Load()
-	mask := q.mask
-	if head == tail {
-		return nil // 队列为空。
-	}
-	size := int(tail - head)
-	result := make([]any, size)
-	actual := 0
-
-	for i := 0; i < size; i++ {
-		slot := &q.data[(head+uint64(i))&mask]
-		typ := atomic.LoadPointer(&slot.typ)
-		data := atomic.LoadPointer(&slot.data)
-		if typ == nil {
-			// 并发写入未完成，终止
-			break
+	for {
+		tail := q.tail.Load()
+		head := q.head.Load()
+		mask := q.mask
+		if head == tail {
+			return nil // 队列为空。
 		}
-		result[actual] = newAny(typ, data)
-		actual++
+		size := int(tail - head)
+		result := make([]any, size)
+		actual := 0
+
+		for i := 0; i < size; i++ {
+			slot := &q.data[(head+uint64(i))&mask]
+			typ := atomic.LoadPointer(&slot.typ)
+			data := atomic.LoadPointer(&slot.data)
+			if typ == nil {
+				// 并发写入未完成，终止
+				break
+			}
+			result[actual] = newAny(typ, data)
+			actual++
+		}
+		result = result[:actual]
+
+		// 如果头部或者尾部已改变，则说明并发读写，重新获取
+		newHead, newTail := q.head.Load(), q.tail.Load()
+		if newHead != head || newTail != tail {
+			continue
+		}
+		return result
 	}
-	result = result[:actual]
-	return result
 }
