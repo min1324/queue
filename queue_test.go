@@ -13,9 +13,8 @@ import (
 
 func perQueue(t *testing.T, f func(t *testing.T, q Interface)) {
 	var arrQueue = [...]Interface{
-		&queue.MuxRing{},
-		// &queue.MuxAuto{},
 		&queue.LockFree{},
+		&queue.MuxRing[any]{},
 	}
 
 	for _, q := range arrQueue {
@@ -196,10 +195,6 @@ func TestConcurrentPushPop_LockFree(t *testing.T) {
 	tConcurrentPushPop(t, &queue.LockFree{})
 }
 
-func TestConcurrentPushPop_MuxRing(t *testing.T) {
-	tConcurrentPushPop(t, &queue.MuxRing{})
-}
-
 func tConcurrentPushPop(t *testing.T, q Interface) {
 	const (
 		producerCount    = 4
@@ -324,10 +319,6 @@ func TestPushPopBatch_LockFree(t *testing.T) {
 	tPushPopBatch(t, &queue.LockFree{})
 }
 
-func TestPushPopBatch_MuxRing(t *testing.T) {
-	tPushPopBatch(t, &queue.MuxRing{})
-}
-
 // 标准测试：验证批量操作的正确性
 func tPushPopBatch(t *testing.T, q Interface) {
 	const queueCap = shortTestCap
@@ -433,10 +424,6 @@ func TestPushPopBatchConcurrent_LockFree(t *testing.T) {
 	pushPopBatchConcurrent(t, &queue.LockFree{})
 }
 
-func TestPushPopBatchConcurrent_MuxRing(t *testing.T) {
-	pushPopBatchConcurrent(t, &queue.MuxRing{})
-}
-
 // 压力测试：验证并发环境下的批量操作性能
 func pushPopBatchConcurrent(t *testing.T, q Interface) {
 	const (
@@ -533,14 +520,6 @@ func TestHeadTail_LockFree(t *testing.T) {
 	headTail(t, &queue.LockFree{})
 }
 
-func TestHeadTail_MuxRing(t *testing.T) {
-	headTail(t, &queue.MuxRing{})
-}
-
-func TestHeadTail_MuxAuto(t *testing.T) {
-	headTail(t, &queue.MuxAuto{})
-}
-
 func headTail(t *testing.T, q Interface) {
 	v, ok := q.Head()
 	if ok {
@@ -579,79 +558,8 @@ func headTail(t *testing.T, q Interface) {
 	}
 }
 
-func TestGrowShrink(t *testing.T) {
-	q := queue.MuxAuto{}
-	q.Init(10)
-	for i := 0; i < 1<<8; i++ {
-		ok := q.Push(i)
-		if !ok {
-			t.Fatalf("grow fail %d,cap:%d,size:%d", i, q.Cap(), q.Size())
-		}
-	}
-	for i := 1 << 8; i < 1<<20; i++ {
-		ok := q.Push(i)
-		if !ok {
-			t.Fatalf("grow fail %d,cap:%d,size:%d", i, q.Cap(), q.Size())
-		}
-	}
-	result := make([]any, 1<<20)
-	curCap, curSize := q.Cap(), q.Size()
-	for i := 0; i < 1<<20; i++ {
-		v, ok := q.Pop()
-		if !ok {
-			break
-		}
-		result[i] = v
-	}
-	newCap, newSize := q.Cap(), q.Size()
-	if newCap == curCap || curSize == newSize {
-		t.Fatalf("shrink failed after pop 1<<20")
-	}
-	for i := 0; i < 1<<20; i++ {
-		if result[i] != i {
-			t.Fatalf("after grow pop err,got %v,want %v", result[i], i)
-		}
-	}
-}
-
-func TestBatchGrowShrink(t *testing.T) {
-	q := queue.MuxAuto{}
-	q.Init(10)
-	size := 1 << 20
-	vals := make([]any, size)
-	for i := 0; i < size; i++ {
-		vals[i] = i
-	}
-	n, err := q.BatchPush(vals...)
-	if n != size || err != nil {
-		t.Fatalf("BatchPush grow fail size %d,len %d,n %d,err:%v", size, len(vals), n, err)
-	}
-	curCap, curSize := q.Cap(), q.Size()
-	result := q.BatchPop(size)
-	if len(result) != size {
-		t.Fatalf("BatchPop err got %d want %d", len(result), size)
-	}
-	for i := 0; i < size; i++ {
-		if result[i] != vals[i] {
-			t.Fatalf("BatchPop err in %v,got %v,want %v\n", i, result[i], vals[i])
-		}
-	}
-	newCap, newSize := q.Cap(), q.Size()
-	if newCap == curCap || curSize == newSize {
-		t.Fatalf("shrink failed after pop 1<<20")
-	}
-}
-
 func TestAll_LockFree(t *testing.T) {
 	tAll(t, &queue.LockFree{})
-}
-
-func TestAll_MuxRing(t *testing.T) {
-	tAll(t, &queue.MuxRing{})
-}
-
-func TestAll_MuxAuto(t *testing.T) {
-	tAll(t, &queue.MuxAuto{})
 }
 
 func tAll(t *testing.T, q Interface) {
@@ -709,4 +617,24 @@ func TestPushAll(t *testing.T) {
 			t.Errorf("测试1: Expected %v, got %v", i+1, popped[i])
 		}
 	}
+}
+
+func TestConcurrentPushPop_MuxRing(t *testing.T) {
+	tConcurrentPushPop(t, &queue.MuxRing[any]{})
+}
+
+func TestPushPopBatch_MuxRing(t *testing.T) {
+	tPushPopBatch(t, &queue.MuxRing[any]{})
+}
+
+func TestPushPopBatchConcurrent_MuxRing(t *testing.T) {
+	pushPopBatchConcurrent(t, &queue.MuxRing[any]{})
+}
+
+func TestHeadTail_MuxRing(t *testing.T) {
+	headTail(t, &queue.MuxRing[any]{})
+}
+
+func TestAll_MuxRing(t *testing.T) {
+	tAll(t, &queue.MuxRing[any]{})
 }
